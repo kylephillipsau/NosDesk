@@ -3560,6 +3560,16 @@ settings-notifications-browser-banner-description = Sta browsermeldingen toe om 
 settings-notifications-browser-banner-enable = Meldingen inschakelen
 settings-notifications-browser-enabled-success = Browsermeldingen ingeschakeld
 settings-notifications-browser-denied-error = Toestemming voor browsermeldingen geweigerd
+settings-notifications-push-banner-title = Pushmeldingen
+settings-notifications-push-prompt-description = Ontvang meldingen op dit apparaat wanneer er iets van je nodig is, ook als de app gesloten is.
+settings-notifications-push-prompt-enable = Meldingen inschakelen
+settings-notifications-push-granted-description = Dit apparaat is ingesteld voor meldingen. Kies hieronder waarvoor je een melding krijgt.
+settings-notifications-push-register-error = Meldingen zijn toegestaan, maar dit apparaat kon niet worden geregistreerd. Controleer je verbinding en probeer het opnieuw.
+settings-notifications-push-denied-description = Meldingen zijn uitgeschakeld voor Nosdesk in je apparaatinstellingen. Zet ze daar weer aan om meldingen te ontvangen.
+settings-notifications-push-denied-open-settings = Apparaatinstellingen openen
+settings-notifications-push-enabled-success = Meldingen ingeschakeld op dit apparaat
+settings-notifications-push-denied-error = Toestemming voor meldingen is geweigerd
+settings-notifications-interrupt-origin-description-native = Waarschuw me alleen voor acties van mensen. Automatische meldingen (SLA-overschrijdingen, te late uitleningen, automatische toewijzing) blijven in de bel staan.
 settings-notifications-quick-settings-title = Snelle instellingen
 # MACHINE TRANSLATION, pending native review
 settings-notifications-interrupt-origin-title = Onderbrekingen

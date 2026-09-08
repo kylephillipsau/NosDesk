@@ -6,7 +6,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.Permission
@@ -67,6 +70,58 @@ class PushPlugin(private val activity: Activity) : Plugin(activity) {
     @PermissionCallback
     fun permissionCallback(invoke: Invoke) {
         resolveGranted(invoke, getPermissionState(ALIAS_NOTIFICATIONS) == PermissionState.GRANTED)
+    }
+
+    /**
+     * Report permission WITHOUT prompting, so opening notification settings
+     * never triggers the runtime dialog as a side effect.
+     *
+     * `areNotificationsEnabled` is the authority on whether anything will
+     * actually be shown: it also covers a user switching notifications off in
+     * system settings, and channel-level blocks, which the POST_NOTIFICATIONS
+     * grant alone does not. The permission state only distinguishes "never
+     * asked" from "denied", and only on 13+.
+     */
+    @Command
+    fun checkPermission(invoke: Invoke) {
+        val enabled = NotificationManagerCompat.from(activity).areNotificationsEnabled()
+        // PROMPT_WITH_RATIONALE counts as promptable: Android will still show
+        // the dialog in that state, so the in-app button works and there is no
+        // need to send the user out to system settings.
+        val promptable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            getPermissionState(ALIAS_NOTIFICATIONS) in
+            setOf(PermissionState.PROMPT, PermissionState.PROMPT_WITH_RATIONALE)
+        val status = when {
+            enabled -> "granted"
+            promptable -> "prompt"
+            else -> "denied"
+        }
+        val ret = JSObject()
+        ret.put("status", status)
+        invoke.resolve(ret)
+    }
+
+    /**
+     * Open this app's notification settings. After a denial the runtime prompt
+     * stops appearing, so this is the route back.
+     */
+    @Command
+    fun openSettings(invoke: Invoke) {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
+        try {
+            activity.startActivity(intent)
+        } catch (_: Exception) {
+            // Not every OEM ships the per-app notification screen; the app
+            // details page exists everywhere and gets them to the same place.
+            activity.startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", activity.packageName, null),
+                )
+            )
+        }
+        invoke.resolve()
     }
 
     private fun resolveGranted(invoke: Invoke, granted: Boolean) {

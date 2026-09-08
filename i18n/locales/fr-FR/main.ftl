@@ -3569,6 +3569,16 @@ settings-notifications-browser-banner-description = Autorisez les notifications 
 settings-notifications-browser-banner-enable = Activer les notifications
 settings-notifications-browser-enabled-success = Notifications du navigateur activées
 settings-notifications-browser-denied-error = Autorisation de notification du navigateur refusée
+settings-notifications-push-banner-title = Notifications push
+settings-notifications-push-prompt-description = Recevez des alertes sur cet appareil lorsque quelque chose requiert votre attention, même quand l'application est fermée.
+settings-notifications-push-prompt-enable = Activer les notifications
+settings-notifications-push-granted-description = Cet appareil est configuré pour les notifications. Choisissez ci-dessous ce qui doit vous alerter.
+settings-notifications-push-register-error = Les notifications sont autorisées, mais cet appareil n'a pas pu être enregistré. Vérifiez votre connexion et réessayez.
+settings-notifications-push-denied-description = Les notifications sont désactivées pour Nosdesk dans les réglages de votre appareil. Réactivez-les depuis ces réglages pour recevoir des alertes.
+settings-notifications-push-denied-open-settings = Ouvrir les réglages de l'appareil
+settings-notifications-push-enabled-success = Notifications activées sur cet appareil
+settings-notifications-push-denied-error = L'autorisation de notification a été refusée
+settings-notifications-interrupt-origin-description-native = M'alerter uniquement pour les actions effectuées par des personnes. Les notifications automatiques (dépassements de SLA, prêts en retard, attribution automatique) restent visibles dans la cloche.
 settings-notifications-quick-settings-title = Réglages rapides
 # MACHINE TRANSLATION, pending native review
 settings-notifications-interrupt-origin-title = Interruptions

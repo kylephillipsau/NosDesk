@@ -51,55 +51,6 @@ pub fn register(
     Ok(())
 }
 
-/// Notification types that get push enabled the first time a user registers a
-/// device.
-///
-/// Both are addressed to one person by name: an assignment makes a ticket
-/// yours, a mention asks for you specifically. Comment activity is deliberately
-/// absent — on a busy ticket it is the noisiest thing a helpdesk produces, and a
-/// phone buzzing for every reply is how users learn to disable push entirely.
-const PUSH_ON_FIRST_DEVICE: &[&str] = &["ticket_assigned", "mentioned"];
-
-// sync-audit-only: preference seeding; no sync client subscribes to preferences.
-/// Give a user sensible push preferences the first time one of their devices
-/// registers.
-///
-/// Push is off by default for every type, which is the right default for a
-/// browser: there is nothing to send to and no OS permission. But the mobile app
-/// asks for notification permission at sign-in, and granting it registered a
-/// device and then changed nothing observable — the prompt promised something
-/// the product did not deliver. This closes that gap at the only moment where
-/// consent and capability both exist.
-///
-/// `DO NOTHING` per row, so this can never overwrite a choice. A user who turns
-/// mentions off and later signs in on a second device keeps them off; the seed
-/// simply finds a row and declines. That also makes it idempotent, matching
-/// [`register`], which the client may call on every launch.
-pub fn seed_push_defaults(
-    conn: &mut DbConnection,
-    user: Uuid,
-    workspace: i32,
-) -> QueryResult<usize> {
-    diesel::sql_query(
-        "INSERT INTO notification_preferences \
-           (user_uuid, notification_type_id, channel, enabled, frequency, \
-            workspace_id, created_at, updated_at) \
-         SELECT $1, nt.id, 'push', TRUE, 'instant', $2, now(), now() \
-         FROM notification_types nt \
-         WHERE nt.code = ANY($3) \
-         ON CONFLICT (user_uuid, notification_type_id, channel) DO NOTHING",
-    )
-    .bind::<SqlUuid, _>(user)
-    .bind::<Integer, _>(workspace)
-    .bind::<Array<Text>, _>(
-        PUSH_ON_FIRST_DEVICE
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect::<Vec<_>>(),
-    )
-    .execute(conn)
-}
-
 // sync-audit-only: device-token lifecycle; no sync client subscribes to it.
 /// Revoke a token for a user (logout / unregister). Rows affected.
 pub fn revoke(conn: &mut DbConnection, user: Uuid, token: &str) -> QueryResult<usize> {
@@ -123,6 +74,22 @@ pub fn active_tokens_for_user(
         .filter(d::revoked_at.is_null())
         .select((d::platform, d::token))
         .load(conn)
+}
+
+/// Whether the user has at least one live device.
+///
+/// The push channel's default hangs off this: with nothing registered there is
+/// nothing to send to, so push resolves to `off` rather than offering a channel
+/// that cannot deliver. Devices span the user's workspaces, so this is keyed by
+/// user alone.
+pub fn has_active_device(conn: &mut DbConnection, user: Uuid) -> QueryResult<bool> {
+    use diesel::dsl::exists;
+    diesel::select(exists(
+        d::user_push_devices
+            .filter(d::user_uuid.eq(user))
+            .filter(d::revoked_at.is_null()),
+    ))
+    .get_result(conn)
 }
 
 // sync-audit-only: device-token lifecycle; no sync client subscribes to it.

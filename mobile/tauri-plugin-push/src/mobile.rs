@@ -32,6 +32,20 @@ impl<R: Runtime> Push<R> {
       .map_err(Into::into)
   }
 
+  pub fn check_permission(&self) -> crate::Result<PermissionStatusResponse> {
+    self
+      .0
+      .run_mobile_plugin("checkPermission", ())
+      .map_err(Into::into)
+  }
+
+  pub fn open_settings(&self) -> crate::Result<()> {
+    self
+      .0
+      .run_mobile_plugin("openSettings", ())
+      .map_err(Into::into)
+  }
+
   pub fn get_token(&self) -> crate::Result<TokenResponse> {
     self
       .0

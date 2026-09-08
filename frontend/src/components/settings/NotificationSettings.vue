@@ -19,6 +19,13 @@ import {
   type NotificationFrequency,
 } from '@nosdesk/core/services/notificationService';
 import { requestNotificationPermission } from '@/composables/useNotificationSSE';
+import {
+  supportsNativePush,
+  checkPushPermission,
+  enableNativePush,
+  openPushSettings,
+  type PushPermission,
+} from '@/platform/pushNotifications';
 
 const fluent = useFluent();
 const t = (key: string, args?: Record<string, string | number>) => fluent.$t(key, args);
@@ -54,6 +61,14 @@ const isLoading = ref(true);
 const isSaving = ref<string | null>(null);
 const preferences = ref<NotificationPreference[]>([]);
 const browserPermission = ref<NotificationPermission>('default');
+
+// Native push, which is a different mechanism from the browser banner below:
+// that one is the foreground `Notification` API, this is APNs/FCM. Inside the
+// Tauri webview `Notification.permission` is permanently 'default', so without
+// this branch the browser banner shows forever and its copy is wrong on a phone.
+const isNativeApp = supportsNativePush();
+const pushPermission = ref<PushPermission>('unsupported');
+const enablingPush = ref(false);
 
 // Origin-based interrupt setting: when on, only human-originated events
 // interrupt (toast / desktop); system/automation triggers stay in the bell.
@@ -201,6 +216,36 @@ const applyAllForChannel = async (channelCode: string, frequency: NotificationFr
   }
 };
 
+/**
+ * Prompt, register the device, and re-read the result.
+ *
+ * Registration otherwise happens only at sign-in, so without this a user who
+ * declined the prompt (or granted permission later in OS settings) would have to
+ * sign out and back in before push worked.
+ */
+const enablePush = async () => {
+  enablingPush.value = true;
+  try {
+    const { permission, registered } = await enableNativePush();
+    pushPermission.value = permission;
+    // Permission alone is not success: it can be granted while the device POST
+    // fails, and saying "you're set up" then would promise alerts that never
+    // arrive. Only a registered device changes what the server will send.
+    if (registered) {
+      emit('success', t('settings-notifications-push-enabled-success'));
+      // Push's default depends on having a registered device, so the matrix the
+      // server resolved before this is stale.
+      preferences.value = await getNotificationPreferences();
+    } else if (permission === 'granted') {
+      emit('error', t('settings-notifications-push-register-error'));
+    } else {
+      emit('error', t('settings-notifications-push-denied-error'));
+    }
+  } finally {
+    enablingPush.value = false;
+  }
+};
+
 const requestBrowserPermission = async () => {
   const granted = await requestNotificationPermission();
   browserPermission.value = Notification.permission;
@@ -235,7 +280,10 @@ onMounted(async () => {
           }),
     ]);
     preferences.value = prefs;
-    if ('Notification' in window) {
+    if (isNativeApp) {
+      // Read-only: rendering settings must never raise the OS prompt.
+      pushPermission.value = await checkPushPermission();
+    } else if ('Notification' in window) {
       browserPermission.value = Notification.permission;
     }
   } catch {
@@ -264,9 +312,56 @@ const gridColumns = computed(
     </div>
 
     <template v-else>
+      <!-- Native push (own profile only). Three states, each with the action
+           that state allows: never asked can prompt, denied cannot (neither OS
+           re-prompts, so the only route back is their settings app), granted
+           says what it is on for. -->
+      <div
+        v-if="isNativeApp && !isManagingOtherUser && pushPermission !== 'unsupported'"
+        class="bg-surface rounded-xl border overflow-hidden"
+        :class="pushPermission === 'granted' ? 'border-default' : 'border-accent/30'"
+      >
+        <div class="p-4">
+          <div class="flex items-start gap-3">
+            <div class="w-9 h-9 bg-accent/15 rounded-lg flex items-center justify-center flex-shrink-0">
+              <span class="text-accent inline-flex"><Icon name="bell" /></span>
+            </div>
+            <div class="flex-1 min-w-0 flex flex-col gap-2">
+              <div class="flex flex-col gap-1">
+                <h3 class="text-sm font-medium text-primary">
+                  {{ $t('settings-notifications-push-banner-title') }}
+                </h3>
+                <p class="text-xs text-secondary">
+                  {{
+                    pushPermission === 'granted'
+                      ? $t('settings-notifications-push-granted-description')
+                      : pushPermission === 'denied'
+                        ? $t('settings-notifications-push-denied-description')
+                        : $t('settings-notifications-push-prompt-description')
+                  }}
+                </p>
+              </div>
+              <div v-if="pushPermission !== 'granted'">
+                <Button
+                  v-if="pushPermission === 'denied'"
+                  size="sm"
+                  variant="secondary"
+                  @click="openPushSettings"
+                >
+                  {{ $t('settings-notifications-push-denied-open-settings') }}
+                </Button>
+                <Button v-else size="sm" :disabled="enablingPush" @click="enablePush">
+                  {{ $t('settings-notifications-push-prompt-enable') }}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Browser Notification Permission Banner (only for own profile) -->
       <div
-        v-if="!isManagingOtherUser && browserPermission !== 'granted'"
+        v-if="!isNativeApp && !isManagingOtherUser && browserPermission !== 'granted'"
         class="bg-surface rounded-xl border border-accent/30 overflow-hidden"
       >
         <div class="p-4">
@@ -301,7 +396,9 @@ const gridColumns = computed(
           :model-value="humanOnly"
           :disabled="savingHumanOnly"
           :label="$t('settings-notifications-interrupt-origin-label')"
-          :description="$t('settings-notifications-interrupt-origin-description')"
+          :description="isNativeApp
+              ? $t('settings-notifications-interrupt-origin-description-native')
+              : $t('settings-notifications-interrupt-origin-description')"
           @update:model-value="setHumanOnly"
         />
       </SectionCard>

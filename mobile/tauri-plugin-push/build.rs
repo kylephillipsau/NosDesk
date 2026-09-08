@@ -1,4 +1,10 @@
-const COMMANDS: &[&str] = &["request_permission", "get_token", "get_pending_notification"];
+const COMMANDS: &[&str] = &[
+  "request_permission",
+  "check_permission",
+  "open_settings",
+  "get_token",
+  "get_pending_notification",
+];
 
 fn main() {
   tauri_plugin::Builder::new(COMMANDS)
