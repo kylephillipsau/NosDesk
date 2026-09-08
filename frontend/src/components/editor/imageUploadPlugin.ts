@@ -84,6 +84,10 @@ function placeholderWidget(pos: number, pending: PendingUpload): Decoration {
     () => {
       const el = document.createElement('span');
       el.className = 'image-upload-placeholder';
+      // Without this the widget is part of the editable region, and an IME
+      // (Android's especially) can compose into it, committing the placeholder
+      // label into the document as real text.
+      el.contentEditable = 'false';
       const spinner = document.createElement('span');
       spinner.className = 'image-upload-spinner';
       const label = document.createElement('span');
@@ -302,6 +306,34 @@ function stripDataURLImages(slice: Slice, state: EditorState): Slice {
 
   const content = scrub(slice.content);
   return found ? new Slice(content, slice.openStart, slice.openEnd) : slice;
+}
+
+/**
+ * Insert images from a UI control (file picker, camera) at the current
+ * selection, on the same path paste and drop already take: placeholder widget,
+ * upload, then swap in the real node, preserving order across a batch.
+ *
+ * Exported because paste and drop were the only ways in, which on a touch
+ * device means there was effectively no way in at all: drag-and-drop between
+ * apps barely exists there, and pasting an image into a contenteditable is
+ * inconsistent in Android's WebView.
+ *
+ * Takes `options` explicitly rather than reaching into plugin state, so the
+ * caller passes the same object it gave `createImageUploadPlugin`.
+ */
+export function insertImageFiles(
+  view: EditorView,
+  list: FileList | null | undefined,
+  options: ImageUploadPluginOptions
+): void {
+  const files = imageFilesFrom(list);
+  if (!files.length) return;
+  void uploadBatch(
+    view,
+    files.map((file) => ({ file, alt: file.name })),
+    view.state.selection.from,
+    options
+  );
 }
 
 export function createImageUploadPlugin(options: ImageUploadPluginOptions): Plugin {

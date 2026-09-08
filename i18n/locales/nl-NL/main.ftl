@@ -3282,6 +3282,8 @@ editor-insert-menu-blockquote = Citaat
 editor-insert-menu-code-block = Codeblok
 editor-insert-menu-link = Link
 editor-insert-menu-embed-document = Document insluiten
+editor-insert-menu-image = Afbeelding
+editor-insert-menu-take-photo = Foto maken
 
 # Editor: prompt voor codeblok-taal (CollaborativeEditor)
 editor-code-block-language-prompt = Taal voor syntaxisaccentuering (optioneel):

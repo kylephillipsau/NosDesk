@@ -74,7 +74,7 @@ import {
     emDash,
     ellipsis,
 } from "prosemirror-inputrules";
-import { createImageUploadPlugin } from "./editor/imageUploadPlugin";
+import { createImageUploadPlugin, insertImageFiles } from "./editor/imageUploadPlugin";
 import { ImageNodeView } from "./editor/imageNodeView";
 import { parseCollabDocId } from "@nosdesk/core/utils/collabDocId";
 import { EditorImageUploadError } from "@/services/editorImageService";
@@ -134,6 +134,36 @@ const toast = useToastStore();
 // A failed paste used to vanish silently: the plugin calls preventDefault and
 // then only logged. Each failure mode gets its own message because they have
 // different fixes (save the page, pick a smaller image, retry).
+// Shared by the paste/drop plugin and the insert-menu pickers, so a picked
+// image takes exactly the same path as a pasted one.
+const imageUploadOptions = () => ({
+    docId: props.docId,
+    uploadingLabel: (filename: string) => t('editor-image-uploading', { name: filename }),
+    onUploadStart: () => log.debug('Image upload started'),
+    onUploadEnd: () => log.debug('Image upload completed'),
+    onUploadError: handleImageUploadError,
+});
+
+const imagePickerRef = ref<HTMLInputElement | null>(null);
+const cameraPickerRef = ref<HTMLInputElement | null>(null);
+
+// `capture` is honoured by mobile browsers and ignored on desktop, so the
+// entry is only offered where it does something.
+const supportsCameraCapture = 'capture' in document.createElement('input');
+
+const onImagesPicked = (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const view = editorView;
+    if (view) {
+        // Focus first: the click moved focus to the menu, and the insert reads
+        // the editor's current selection.
+        view.focus();
+        insertImageFiles(view, input.files, imageUploadOptions());
+    }
+    // Reset so picking the same file twice still fires `change`.
+    input.value = '';
+};
+
 const handleImageUploadError = (error: unknown, file: { name: string }) => {
     log.error("Image upload failed:", error);
     const code = error instanceof EditorImageUploadError ? error.code : "upload-failed";
@@ -936,13 +966,7 @@ const initEditor = async () => {
                     dropCursor(), // Shows cursor when dragging
                     createTicketDropIndicatorPlugin(), // Shows drop indicator for ticket cards
                     // NOTE: gapCursor() removed - causes null reference errors with empty Yjs documents
-                    createImageUploadPlugin({
-                        docId: props.docId,
-                        uploadingLabel: (filename: string) => t('editor-image-uploading', { name: filename }),
-                        onUploadStart: () => log.debug('Image upload started'),
-                        onUploadEnd: () => log.debug('Image upload completed'),
-                        onUploadError: handleImageUploadError,
-                    }),
+                    createImageUploadPlugin(imageUploadOptions()),
                     syntaxHighlightPlugin,
                     createMentionViewPlugin(),
                     twemojiPlugin,
@@ -2273,9 +2297,54 @@ defineExpose({
                         >
                             {{ $t('editor-insert-menu-embed-document') }}
                         </button>
+                        <button
+                            @click="
+                                showInsertMenu = false;
+                                imagePickerRef?.click();
+                            "
+                            class="dropdown-item"
+                            role="menuitem"
+                        >
+                            {{ $t('editor-insert-menu-image') }}
+                        </button>
+                        <button
+                            v-if="supportsCameraCapture"
+                            @click="
+                                showInsertMenu = false;
+                                cameraPickerRef?.click();
+                            "
+                            class="dropdown-item"
+                            role="menuitem"
+                        >
+                            {{ $t('editor-insert-menu-take-photo') }}
+                        </button>
                     </div>
                 </Teleport>
             </div>
+
+            <!-- Image sources. Hidden inputs rather than a native plugin: the
+                 picker already offers Gallery / Camera / Files on Android and
+                 Photo Library / Take Photo / Files on iOS, and the same markup
+                 works on the web. `capture` asks for the camera directly, which
+                 matters for a helpdesk: photographing a device or an error on a
+                 screen is the common case. Desktop browsers ignore `capture`,
+                 so that entry is hidden where there is no touch input. -->
+            <input
+                ref="imagePickerRef"
+                type="file"
+                accept="image/*"
+                multiple
+                class="hidden"
+                @change="onImagesPicked"
+            />
+            <input
+                ref="cameraPickerRef"
+                type="file"
+                accept="image/*"
+                capture="environment"
+                class="hidden"
+                @change="onImagesPicked"
+            />
 
             <div class="toolbar-divider"></div>
 

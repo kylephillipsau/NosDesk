@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { DOMParser, DOMSerializer } from 'prosemirror-model'
+import { configureAssetUrl } from '@nosdesk/core/transport'
 import { schema } from './schema'
 
 /**
@@ -66,5 +67,49 @@ describe('image resize/adjust attrs', () => {
     const attrs = parseImage(el)
     expect(attrs.width).toBe(240)
     expect(attrs.align).toBeNull()
+  })
+})
+
+/**
+ * On the app the rendered `src` is platform-specific (the webview cannot load a
+ * relative `/api/...` URL, so it goes through the asset proxy scheme), while the
+ * stored `src` must stay relative: the document is shared, and a paste inside
+ * the app re-enters through parseDOM. Writing a `nosdesk-asset://` URL into Yjs
+ * would break that image for the web and every other client, permanently.
+ */
+describe('image src under an asset resolver', () => {
+  const PREFIX = 'http://nosdesk-asset.localhost'
+
+  afterEach(() => {
+    configureAssetUrl(
+      (path) => path,
+      (url) => url
+    )
+  })
+
+  it('renders through the resolver but stores the portable path', () => {
+    configureAssetUrl(
+      (path) => (path.startsWith('/') ? `${PREFIX}${path}` : path),
+      (url) => url.replace(/^(?:nosdesk-asset:\/\/localhost|http:\/\/nosdesk-asset\.localhost)/, '')
+    )
+    const stored = '/api/files/collab/doc/abc/def_image.png'
+
+    const el = serializeImage({ src: stored })
+    expect(el.getAttribute('src')).toBe(`${PREFIX}${stored}`)
+
+    // The round trip a copy/paste performs.
+    expect(parseImage(el).src).toBe(stored)
+  })
+
+  it('leaves an absolute external src alone in both directions', () => {
+    configureAssetUrl(
+      (path) => (path.startsWith('/') ? `${PREFIX}${path}` : path),
+      (url) => url.replace(/^(?:nosdesk-asset:\/\/localhost|http:\/\/nosdesk-asset\.localhost)/, '')
+    )
+    const external = 'https://example.com/logo.png'
+
+    const el = serializeImage({ src: external })
+    expect(el.getAttribute('src')).toBe(external)
+    expect(parseImage(el).src).toBe(external)
   })
 })

@@ -23,6 +23,7 @@
 import type { Node as PMNode } from 'prosemirror-model';
 import { NodeSelection } from 'prosemirror-state';
 import type { EditorView, NodeView } from 'prosemirror-view';
+import { assetUrl } from '@nosdesk/core/transport';
 
 const MIN_WIDTH_PX = 60;
 
@@ -162,7 +163,13 @@ export class ImageNodeView implements NodeView {
       width: number | null;
       align: Align | null;
     };
-    if (this.img.getAttribute('src') !== src) this.img.setAttribute('src', src);
+    // `src` is stored relative (`/api/files/collab/...`) so the document stays
+    // portable. In the app a relative URL resolves against the webview origin,
+    // which serves the bundled SPA and has no `/api`, so the load fails
+    // silently with naturalWidth 0. `assetUrl` rewrites it to the proxied
+    // scheme; identity on the web.
+    const renderSrc = assetUrl(src);
+    if (this.img.getAttribute('src') !== renderSrc) this.img.setAttribute('src', renderSrc);
     if (alt) this.img.setAttribute('alt', alt);
     else this.img.removeAttribute('alt');
     if (title) this.img.setAttribute('title', title);
