@@ -39,11 +39,25 @@ pub async fn apple_app_site_association() -> impl Responder {
     }))
 }
 
-/// `GET /.well-known/assetlinks.json` — Android App Links statement. The release
-/// signing cert's SHA-256 fingerprint(s) come from `NOSDESK_ANDROID_CERT_SHA256`
-/// (comma-separated). Until that is set, the statement lists no fingerprints and
-/// Android App Links stay unverified (iOS is unaffected); the route still exists
-/// so setting the env var is all that's needed to light Android up.
+/// `GET /.well-known/assetlinks.json` — Android Digital Asset Links statement.
+/// The release signing cert's SHA-256 fingerprint(s) come from
+/// `NOSDESK_ANDROID_CERT_SHA256` (comma-separated). Until that is set, the
+/// statement lists no fingerprints and nothing below is verified (iOS is
+/// unaffected); the route still exists so setting the env var is all that's
+/// needed to light Android up.
+///
+/// Two relations, because the file does two jobs:
+///
+/// - `handle_all_urls` verifies Android App Links, so a ticket URL opens the
+///   app instead of a chooser.
+/// - `get_login_creds` associates the app with this origin for credential
+///   sharing. Without it a password manager has no app-to-domain mapping and
+///   falls back to whatever identity it can see, which for a Tauri app is the
+///   WebView's local asset host rather than the workspace domain.
+///
+/// Set both fingerprints in production: Play re-signs uploads, so the
+/// certificate users install is Play's app signing key, while a sideloaded
+/// build carries the upload key.
 pub async fn assetlinks() -> impl Responder {
     let package = std::env::var("NOSDESK_ANDROID_PACKAGE")
         .unwrap_or_else(|_| DEFAULT_ANDROID_PACKAGE.to_string());
@@ -55,7 +69,10 @@ pub async fn assetlinks() -> impl Responder {
         .collect();
     HttpResponse::Ok().json(json!([
         {
-            "relation": ["delegate_permission/common.handle_all_urls"],
+            "relation": [
+                "delegate_permission/common.handle_all_urls",
+                "delegate_permission/common.get_login_creds"
+            ],
             "target": {
                 "namespace": "android_app",
                 "package_name": package,
@@ -124,9 +141,15 @@ mod tests {
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert_eq!(body[0]["target"]["namespace"], "android_app");
         assert_eq!(body[0]["target"]["package_name"], "com.nosdesk.app");
-        assert_eq!(
-            body[0]["relation"][0],
-            "delegate_permission/common.handle_all_urls"
-        );
+        let relations: Vec<&str> = body[0]["relation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        // Deep linking and credential sharing are separate grants; the file
+        // does both jobs and dropping either breaks one of them silently.
+        assert!(relations.contains(&"delegate_permission/common.handle_all_urls"));
+        assert!(relations.contains(&"delegate_permission/common.get_login_creds"));
     }
 }
