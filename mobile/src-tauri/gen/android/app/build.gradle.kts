@@ -48,6 +48,19 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
+            // The debug variant installs alongside the Play build under its own
+            // package, so both wore the same name and icon in the launcher. That
+            // cost real time: a layout fix was twice judged "still broken" from
+            // the release app. A placeholder rather than resValue, because
+            // values/strings.xml already defines app_name and defining it twice
+            // in one variant is a duplicate-resource build error.
+            manifestPlaceholders["appLabel"] = "Nosdesk debug"
+            // Its own OIDC callback scheme. With both packages declaring an
+            // unqualified `nosdesk://`, Android delivered the redirect to
+            // whichever app held the "open by default" preference, so signing
+            // in to one completed in the other. src-tauri/src/lib.rs returns the
+            // matching value to the JS that builds the redirect_uri.
+            manifestPlaceholders["oidcScheme"] = "nosdesk.debug"
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
@@ -59,6 +72,10 @@ android {
             }
         }
         getByName("release") {
+            // Keeps the shipped label coming from values/strings.xml; only the
+            // debug variant overrides it.
+            manifestPlaceholders["appLabel"] = "@string/app_name"
+            manifestPlaceholders["oidcScheme"] = "nosdesk"
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }

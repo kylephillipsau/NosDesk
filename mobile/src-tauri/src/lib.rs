@@ -1,5 +1,30 @@
 mod asset_proxy;
 
+/// The custom URL scheme this build's OIDC redirect comes back on.
+///
+/// The Android debug variant installs alongside the Play build under
+/// `com.nosdesk.app.debug`, and an unqualified `nosdesk://` scheme declared by
+/// both packages makes the callback ambiguous: Android routes it to whichever
+/// app holds the "open by default" preference, so signing into one silently
+/// completes in the other. Giving the debug variant its own scheme removes the
+/// ambiguity. `AndroidManifest.xml` declares the same value through the
+/// `oidcScheme` manifest placeholder.
+///
+/// Android only. iOS debug and release share a bundle id, so there is nothing
+/// to disambiguate, and changing it there would need a second redirect URI
+/// registered on the IdP for no gain.
+#[tauri::command]
+fn oidc_scheme() -> &'static str {
+  #[cfg(all(target_os = "android", debug_assertions))]
+  {
+    "nosdesk.debug"
+  }
+  #[cfg(not(all(target_os = "android", debug_assertions)))]
+  {
+    "nosdesk"
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -23,12 +48,18 @@ pub fn run() {
     // Platform + OS version, used to name this device in the user's session
     // list (see mobile/src/deviceName.ts).
     .plugin(tauri_plugin_os::init())
+    // Android only: keeps the status/navigation bar icons legible against the
+    // theme the user picked in the app, which the system does not know about.
+    .plugin(tauri_plugin_system_bars::init())
     // Authenticated asset proxy: the webview loads workspace-scoped files via
     // the `nosdesk-asset` scheme; Rust forwards them to the API with the bearer
     // and Range header. See src/asset_proxy.rs.
     .manage(asset_proxy::AssetProxy::new())
     .register_asynchronous_uri_scheme_protocol(asset_proxy::SCHEME, asset_proxy::handle)
-    .invoke_handler(tauri::generate_handler![asset_proxy::set_asset_proxy_session])
+    .invoke_handler(tauri::generate_handler![
+      asset_proxy::set_asset_proxy_session,
+      oidc_scheme
+    ])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

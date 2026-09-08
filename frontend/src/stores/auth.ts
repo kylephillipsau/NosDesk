@@ -14,6 +14,7 @@ import { extractErrorMessage } from '@/utils/errors';
 import { activeWorkspaceSlug } from '@/services/activeWorkspace';
 import { getWorkspaceRouting } from '@nosdesk/core/services/instanceConfig';
 import { isTauriRuntime } from '@/platform';
+import { nativeLogoutRedirectUri } from '@/platform/oidcScheme';
 import { transport } from '@nosdesk/core/transport';
 
 // Configure axios to use relative URLs and send cookies
@@ -486,8 +487,11 @@ export const useAuthStore = defineStore('auth', () => {
     // Web returns to /login; native returns on its custom scheme (which the app
     // intercepts). The backend only mints a logout_url when this session was an
     // OIDC one, so no client-side provider check is needed.
+    // The native scheme is per build variant (the Android debug build uses
+    // `nosdesk.debug` so its callback cannot be delivered to the Play build),
+    // so the value comes from the native side rather than a literal.
     const redirectUri = isTauriRuntime()
-      ? 'nosdesk://auth/logout-callback'
+      ? await nativeLogoutRedirectUri()
       : window.location.origin + '/login';
 
     // Revoke the session server-side while credentials are still live, and get

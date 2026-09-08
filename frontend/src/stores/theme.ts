@@ -8,6 +8,7 @@
  * - Backend synchronization
  */
 import { logger } from '@nosdesk/core/utils/logger'
+import { setSystemBarAppearance } from '@/platform/systemBars'
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import userService from '@/services/userService'
@@ -117,6 +118,12 @@ export const useThemeStore = defineStore('theme', () => {
     }
 
     applyTheme(effectiveTheme.value, effectiveAccent)
+
+    // Android draws edge to edge, so the status and navigation bars sit over
+    // our own surface. The system picks their icon colour from its own dark
+    // mode, which has nothing to do with the theme chosen here, so tell it.
+    // No-op on web and iOS.
+    setSystemBarAppearance(effectiveTheme.value.meta.isDark)
   }
 
   /**

@@ -11,12 +11,15 @@
       "identifier": "http:default",
       "comment": "Any HTTPS host: the user picks their Nosdesk server (cloud or self-hosted). Still HTTPS-only and only ever the server the user configured.",
       "allow": [
-        { "url": "https://**" }
+        {
+          "url": "https://**"
+        }
       ]
     },
     "web-auth:default",
     "web-auth:allow-authenticate",
     "secure-store:default",
+    "system-bars:default",
     "haptics:allow-impact-feedback",
     "os:allow-platform",
     "os:allow-version",
@@ -26,7 +29,9 @@
       "identifier": "opener:allow-open-url",
       "comment": "Cross-tenant deep-link fallback: open the ticket URL in the system browser. HTTPS only.",
       "allow": [
-        { "url": "https://*" }
+        {
+          "url": "https://*"
+        }
       ]
     }
   ]
