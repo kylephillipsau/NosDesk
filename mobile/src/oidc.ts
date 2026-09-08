@@ -15,8 +15,34 @@ import { setSession } from './transport'
 
 // Custom-scheme redirect registered for the public client on the IdP. iOS needs
 // no Info.plist entry: ASWebAuthenticationSession intercepts this scheme itself.
-const REDIRECT_URI = 'nosdesk://auth/callback'
-const CALLBACK_SCHEME = 'nosdesk'
+//
+// The scheme comes from the native side rather than a constant, because the
+// Android debug variant uses `nosdesk.debug` to avoid colliding with the Play
+// build's `nosdesk` (both packages declaring it made the callback land in
+// whichever app held the "open by default" preference). Resolved once and
+// cached; the fallback keeps the desktop dev shell working.
+let cachedScheme: string | undefined
+
+async function callbackScheme(): Promise<string> {
+  if (cachedScheme) return cachedScheme
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    cachedScheme = await invoke<string>('oidc_scheme')
+  } catch {
+    cachedScheme = 'nosdesk'
+  }
+  return cachedScheme
+}
+
+/** `<scheme>://auth/callback`, the redirect this build registers with the IdP. */
+export async function redirectUri(): Promise<string> {
+  return `${await callbackScheme()}://auth/callback`
+}
+
+/** `<scheme>://auth/logout-callback`, the client's post_logout_redirect_uri. */
+export async function logoutRedirectUri(): Promise<string> {
+  return `${await callbackScheme()}://auth/logout-callback`
+}
 
 interface NativeOidcConfig {
   issuer: string
@@ -108,6 +134,9 @@ export async function loginWithOidc(): Promise<void> {
   const cfg = await step('config', 15000, () => fetchConfig())
   const endpoints = await step('discovery', 15000, () => discover(cfg.issuer))
 
+  const scheme = await callbackScheme()
+  const redirect = `${scheme}://auth/callback`
+
   const verifier = randomString(32)
   const challenge = await pkceChallenge(verifier)
   const state = randomString(16)
@@ -117,7 +146,7 @@ export async function loginWithOidc(): Promise<void> {
   authUrl.search = new URLSearchParams({
     response_type: 'code',
     client_id: cfg.client_id,
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirect,
     scope: cfg.scopes,
     state,
     nonce,
@@ -128,7 +157,7 @@ export async function loginWithOidc(): Promise<void> {
   // System browser; returns the nosdesk://auth/callback URL inline. Long
   // timeout: the user is logging in.
   const { callbackUrl } = await step('browser', 300000, () =>
-    authenticate({ url: authUrl.toString(), callbackScheme: CALLBACK_SCHEME }),
+    authenticate({ url: authUrl.toString(), callbackScheme: scheme }),
   )
   const { code, state: returnedState } = parseCallback(callbackUrl)
   if (returnedState !== state) throw new Error('Sign-in failed (state mismatch)')
@@ -141,7 +170,7 @@ export async function loginWithOidc(): Promise<void> {
       body: new URLSearchParams({
         grant_type: 'authorization_code',
         code,
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: redirect,
         client_id: cfg.client_id,
         code_verifier: verifier,
       }).toString(),
@@ -176,7 +205,7 @@ export async function loginWithOidc(): Promise<void> {
  * Drive RP-initiated (front-channel) logout at the IdP. Opens the server-built
  * `end_session` URL in the system browser (`ASWebAuthenticationSession`), which
  * clears the shared IdP session cookie and returns on our custom scheme
- * (`nosdesk://auth/logout-callback`, registered as the client's
+ * (`<scheme>://auth/logout-callback`, registered as the client's
  * post_logout_redirect_uri).
  *
  * Best-effort by contract: the caller has already cleared the local session, so
@@ -186,7 +215,7 @@ export async function loginWithOidc(): Promise<void> {
  */
 export async function logoutViaOidc(logoutUrl: string): Promise<void> {
   try {
-    await authenticate({ url: logoutUrl, callbackScheme: CALLBACK_SCHEME })
+    await authenticate({ url: logoutUrl, callbackScheme: await callbackScheme() })
   } catch {
     // Swallowed deliberately — see the doc comment.
   }
