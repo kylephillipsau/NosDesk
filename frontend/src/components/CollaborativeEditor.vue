@@ -36,6 +36,7 @@ import {
 } from "./editor/linkTooltipPlugin";
 import { createTicketLinkPlugin, setTicketNavigationHandler } from "./editor/ticketLinkPlugin";
 import { mountRevisionView, decodeRevisionBytes, type RevisionViewHandle } from "./editor/revisionView";
+import { restoreRevisionIntoView } from './editor/restoreRevision';
 import { createEmbeddedDocumentPlugin, setDocumentNavigationHandler } from "./editor/embeddedDocumentPlugin";
 import DocumentPicker from "./editor/DocumentPicker.vue";
 import apiClient from "@nosdesk/core/apiClient";
@@ -1912,10 +1913,6 @@ function exitRevisionView() {
 //   revision_no  -> fetch that revision's Yjs snapshot, swap editor
 //                   into read-only mode showing the historical doc
 //
-// Endpoint differs by surface: tickets vs documentation share the
-// same response shape (ArticleRevisionDetail) but live under
-// different paths. We pick based on docId prefix — same heuristic
-// the rest of the editor uses.
 const handleRevisionSelect = async (revisionNumber: number | null) => {
     if (revisionNumber === null) {
         log.info("Exiting revision view");
@@ -1929,34 +1926,68 @@ const handleRevisionSelect = async (revisionNumber: number | null) => {
 
     log.info(`User selected revision ${revisionNumber}`);
     try {
-        const id = props.resourceId;
-        let endpoint: string | null = null;
-        if (id && id > 0) {
-            if (docKind.value === 'ticket') {
-                endpoint = `/collaboration/tickets/${id}/revisions/${revisionNumber}`;
-            } else if (docKind.value === 'doc') {
-                endpoint = `/collaboration/docs/${id}/revisions/${revisionNumber}`;
-            }
-        }
-        if (!endpoint) {
-            log.error(`Unable to derive revision endpoint for docId=${props.docId}`);
-            return;
-        }
-        const response = await apiClient.get<{
-            revision_number: number;
-            yjs_document_content: string;
-        }>(endpoint);
-        viewSnapshot(response.data);
+        const snapshot = await fetchRevision(revisionNumber);
+        if (snapshot) viewSnapshot(snapshot);
     } catch (error) {
         log.error(`Failed to load revision ${revisionNumber}:`, error);
     }
 };
 
-// Handle revision restoration
-const handleRevisionRestored = (revisionNumber: number) => {
-    log.info(`Revision ${revisionNumber} restored successfully`);
+// Endpoint differs by surface: tickets and documentation share the response
+// shape (ArticleRevisionDetail) but live under different paths. We pick based
+// on docId prefix, the same heuristic the rest of the editor uses.
+async function fetchRevision(revisionNumber: number) {
+    const id = props.resourceId;
+    let endpoint: string | null = null;
+    if (id && id > 0) {
+        if (docKind.value === 'ticket') {
+            endpoint = `/collaboration/tickets/${id}/revisions/${revisionNumber}`;
+        } else if (docKind.value === 'doc') {
+            endpoint = `/collaboration/docs/${id}/revisions/${revisionNumber}`;
+        }
+    }
+    if (!endpoint) {
+        log.error(`Unable to derive revision endpoint for docId=${props.docId}`);
+        return null;
+    }
+    const response = await apiClient.get<{
+        revision_number: number;
+        yjs_document_content: string;
+    }>(endpoint);
+    return response.data;
+}
+
+// Handle revision restoration.
+//
+// The revert happens here, on the live view, not on the server: a Yjs update
+// only ever adds operations, so the revision's own history (which every client
+// already has) cannot roll anything back. Replacing the content in a local
+// transaction produces the delete and insert operations that do, and
+// ySyncPlugin carries them to every peer. See editor/restoreRevision.ts.
+const handleRevisionRestored = async (revisionNumber: number) => {
     showRevisionHistory.value = false;
-    // The backend broadcast will update all clients automatically
+    if (!editorView) {
+        log.error(`Cannot restore revision ${revisionNumber}: no editor view`);
+        return;
+    }
+    // Drop the read-only overlay first, or the revert happens under a snapshot
+    // that is still covering the document and nothing appears to have changed.
+    exitRevisionView();
+    try {
+        const snapshot = await fetchRevision(revisionNumber);
+        if (!snapshot) return;
+        const changed = restoreRevisionIntoView(
+            editorView,
+            decodeRevisionBytes(snapshot.yjs_document_content),
+        );
+        log.info(
+            changed
+                ? `Restored revision ${revisionNumber}`
+                : `Revision ${revisionNumber} matches the current document; nothing to restore`,
+        );
+    } catch (error) {
+        log.error(`Failed to restore revision ${revisionNumber}:`, error);
+    }
 };
 
 /**
@@ -1980,6 +2011,9 @@ function getTextContent(): string {
 // Expose methods and state for parent components
 defineExpose({
     viewSnapshot,
+    // Hosts that own their own revision list (DocumentView) delegate the
+    // restore here, because the revert is a transaction on the live view.
+    restoreRevision: handleRevisionRestored,
     exitRevisionView,
     isViewingRevision,
     currentRevisionNumber,

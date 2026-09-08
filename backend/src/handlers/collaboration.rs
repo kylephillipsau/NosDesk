@@ -88,51 +88,30 @@ fn new_server_doc(doc_id: &str) -> Doc {
     doc
 }
 
-/// Rebuild a collaborative document from a stored revision snapshot and
-/// make it the live document: swap it into `app_state`, flag it for
-/// persistence, and broadcast the restored state to connected clients.
+/// Validate that a stored revision can be restored, without touching the live
+/// document.
 ///
-/// yrs updates merge (a union of operations, never a delete), so a
-/// revision can't be reverted in place. The idiomatic restore is to
-/// rebuild a fresh doc from the revision's full-state snapshot
-/// (`encode_state_as_update_v1(&StateVector::default())`, the format
-/// every revision stores) and replace the live one. Already-open
-/// editors merge the broadcast like any update; a hard revert there
-/// relies on the client reloading after a restore.
-async fn restore_revision_snapshot(
-    app_state: &YjsAppState,
-    doc_id: &str,
-    workspace_id: i32,
-    doc_type: DocumentType,
-    snapshot: &[u8],
-) -> Result<(), HttpResponse> {
-    let update = Update::decode_v1(snapshot).map_err(|e| {
-        error!(doc_id, error = ?e, "Error decoding revision snapshot");
-        errors::internal("Error decoding revision")
-    })?;
-
-    let doc = new_server_doc(doc_id);
-    {
-        let mut txn = doc.transact_mut();
-        txn.apply_update(update).map_err(|e| {
-            error!(doc_id, error = ?e, "Error applying revision snapshot");
-            errors::internal("Error applying revision")
-        })?;
-    }
-
-    let full_state = doc
-        .transact()
-        .encode_state_as_update_v1(&StateVector::default());
-
-    app_state
-        .replace_document(doc_id, doc, workspace_id, doc_type)
-        .await;
-    app_state.mark_document_changed(doc_id).await;
-
-    use yrs::sync::{Message, SyncMessage};
-    let restored = Message::Sync(SyncMessage::Update(full_state)).encode_v1();
-    app_state.broadcast(doc_id, "", &restored).await;
-
+/// The content revert deliberately happens on the client, not here. A Yjs
+/// update is a set of operations that is commutative, associative and
+/// idempotent: applying one adds changes to a document but never removes or
+/// reverts existing content. A revision snapshot is this document's own history
+/// at an earlier point, so every connected client already holds every operation
+/// in it. Replaying it, or swapping in a document rebuilt from it and
+/// broadcasting that, is a guaranteed no-op on the clients and reverts nothing.
+///
+/// A revert has to be expressed as new operations. The editor does that in one
+/// ProseMirror transaction on the live view (see
+/// `frontend/src/components/editor/restoreRevision.ts`), which y-prosemirror
+/// translates into the delete and insert operations that reach every peer over
+/// the WebSocket, and which persist through the normal update path. That also
+/// keeps the restore on the machine that owns the room, undoable, and free of
+/// the stale `Arc<Awareness>` that swapping the document left open sessions
+/// holding.
+///
+/// So this endpoint stays the permission gate and the audit point: it proves
+/// the revision decodes before reporting success, and does nothing else.
+fn validate_revision_snapshot(snapshot: &[u8]) -> Result<(), HttpResponse> {
+    Update::decode_v1(snapshot).map_err(|_| errors::internal("Error decoding revision"))?;
     Ok(())
 }
 
@@ -1843,44 +1822,6 @@ impl YjsAppState {
         }
     }
 
-    /// Replace the document with a new one (used for restoring revisions)
-    /// This creates a new Awareness with the new Doc and replaces the existing one
-    async fn replace_document(
-        &self,
-        doc_id: &str,
-        new_doc: Doc,
-        workspace_id: i32,
-        doc_type: DocumentType,
-    ) {
-        let mut documents = self.documents.write().await;
-
-        // Create new Awareness with the new Doc
-        let awareness = Awareness::new(new_doc);
-
-        // Initialize awareness with basic server info
-        let local_state = r#"{"server": true, "name": "Server"}"#;
-        let _ = awareness.set_local_state(local_state);
-
-        let awareness = Arc::new(awareness);
-
-        if let Some(doc_state) = documents.get_mut(doc_id) {
-            // Replace the awareness with the new one
-            doc_state.awareness = Arc::clone(&awareness);
-            doc_state.mark_changed();
-            info!(doc_id = %doc_id, "Replaced document with restored revision");
-        } else {
-            // Document doesn't exist in memory, create it. Restore runs
-            // on the owning machine but doesn't carry the claim fence
-            // here, so the snapshot writes unconditionally (None); the
-            // explicit admin restore is not the stale-owner case fencing
-            // guards against.
-            let doc_state =
-                DocumentState::new(Arc::clone(&awareness), workspace_id, None, doc_type);
-            documents.insert(doc_id.to_string(), doc_state);
-            info!(doc_id = %doc_id, "Created new document from restored revision");
-        }
-    }
-
     // Track contributor for version history
     async fn add_contributor(&self, doc_id: &str, user_uuid: Uuid) {
         let mut documents = self.documents.write().await;
@@ -3531,8 +3472,6 @@ pub async fn get_ticket_revision(
 pub async fn restore_ticket_revision(
     path: web::Path<(i32, i32)>,
     mut tc: TenantConn,
-    ws: crate::extractors::WorkspaceContext,
-    app_state: web::Data<YjsAppState>,
     auth: AuthContext,
 ) -> HttpResponse {
     let (ticket_id, revision_number) = path.into_inner();
@@ -3559,26 +3498,20 @@ pub async fn restore_ticket_revision(
         Err(_) => return errors::not_found_msg("Revision not found"),
     };
 
-    // Build the same workspace-namespaced, UUID-keyed doc_id the clients
-    // connect with, so the restore targets the live room (not a phantom
-    // integer-keyed doc no session is attached to).
-    let doc_id = match tc.run(|conn| crate::repository::tickets::uuid_by_id(conn, ticket_id)) {
-        Ok(Some(uuid)) => format!("ws-{}_ticket-{}", ws.workspace_uuid, uuid),
-        _ => return errors::not_found_msg("Ticket not found"),
-    };
-    if let Err(resp) = restore_revision_snapshot(
-        &app_state,
-        &doc_id,
-        ws.workspace_id,
-        DocumentType::Ticket(ticket_id),
-        &revision.yjs_document_content,
-    )
-    .await
-    {
+    if let Err(resp) = validate_revision_snapshot(&revision.yjs_document_content) {
+        error!(
+            ticket_id,
+            revision_number, "Revision snapshot failed to decode"
+        );
         return resp;
     }
 
-    info!(ticket_id, revision_number, "Restored ticket to revision");
+    // The client applies the revert; this endpoint only authorised it, so it
+    // cannot report whether the revert landed.
+    info!(
+        ticket_id,
+        revision_number, "Authorised ticket revision restore"
+    );
     HttpResponse::Ok().json(json!({
         "success": true,
         "message": format!("Restored to revision {revision_number}"),
@@ -3644,8 +3577,6 @@ pub async fn get_doc_revision(
 pub async fn restore_doc_revision(
     path: web::Path<(i32, i32)>,
     mut tc: TenantConn,
-    ws: crate::extractors::WorkspaceContext,
-    app_state: web::Data<YjsAppState>,
     auth: AuthContext,
 ) -> HttpResponse {
     let (doc_id, revision_number) = path.into_inner();
@@ -3661,28 +3592,17 @@ pub async fn restore_doc_revision(
         Err(_) => return errors::not_found_msg("Revision not found"),
     };
 
-    // Build the same workspace-namespaced, UUID-keyed doc_id the clients
-    // connect with, so the restore targets the live room.
-    let doc_id_str =
-        match tc.run(|conn| crate::repository::documentation::page_uuid_by_id(conn, doc_id)) {
-            Ok(Some(uuid)) => format!("ws-{}_doc-{}", ws.workspace_uuid, uuid),
-            _ => return errors::not_found_msg("Page not found"),
-        };
-    if let Err(resp) = restore_revision_snapshot(
-        &app_state,
-        &doc_id_str,
-        ws.workspace_id,
-        DocumentType::Documentation(doc_id),
-        &revision.yjs_document_snapshot,
-    )
-    .await
-    {
+    if let Err(resp) = validate_revision_snapshot(&revision.yjs_document_snapshot) {
+        error!(
+            doc_id,
+            revision_number, "Revision snapshot failed to decode"
+        );
         return resp;
     }
 
     info!(
         doc_id,
-        revision_number, "Restored documentation page to revision"
+        revision_number, "Authorised documentation revision restore"
     );
     HttpResponse::Ok().json(json!({
         "success": true,
