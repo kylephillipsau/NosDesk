@@ -23,6 +23,9 @@ pub fn run() {
     // Platform + OS version, used to name this device in the user's session
     // list (see mobile/src/deviceName.ts).
     .plugin(tauri_plugin_os::init())
+    // Android only: keeps the status/navigation bar icons legible against the
+    // theme the user picked in the app, which the system does not know about.
+    .plugin(tauri_plugin_system_bars::init())
     // Authenticated asset proxy: the webview loads workspace-scoped files via
     // the `nosdesk-asset` scheme; Rust forwards them to the API with the bearer
     // and Range header. See src/asset_proxy.rs.

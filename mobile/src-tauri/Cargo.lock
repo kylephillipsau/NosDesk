@@ -94,6 +94,7 @@ dependencies = [
  "tauri-plugin-os",
  "tauri-plugin-push",
  "tauri-plugin-secure-store",
+ "tauri-plugin-system-bars",
  "tauri-plugin-web-auth",
 ]
 
@@ -4306,6 +4307,16 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-secure-store"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tauri-plugin-system-bars"
 version = "0.1.0"
 dependencies = [
  "serde",
