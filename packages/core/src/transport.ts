@@ -130,11 +130,29 @@ export function collabWsBaseUrl(): string {
  * mobile/src-tauri/src/asset_proxy.rs.
  */
 let assetUrlResolver: (path: string) => string = (path) => path
+let assetPathResolver: (url: string) => string = (url) => url
 
-export function configureAssetUrl(resolver: (path: string) => string): void {
+/**
+ * `resolver` maps a stored path to something this platform can load.
+ * `reverse` maps it back, and matters more than it looks: an editor image's
+ * `src` is rendered through `assetUrl`, and anything that re-reads rendered DOM
+ * (clipboard paste, `parseDOM`) must recover the stored form. Writing a
+ * platform-specific URL into a shared document would break that image for every
+ * other client, permanently.
+ */
+export function configureAssetUrl(
+  resolver: (path: string) => string,
+  reverse?: (url: string) => string
+): void {
   assetUrlResolver = resolver
+  if (reverse) assetPathResolver = reverse
 }
 
 export function assetUrl(path: string): string {
   return assetUrlResolver(path)
+}
+
+/** Inverse of [`assetUrl`]: the portable path to store in a document. */
+export function assetPath(url: string): string {
+  return assetPathResolver(url)
 }

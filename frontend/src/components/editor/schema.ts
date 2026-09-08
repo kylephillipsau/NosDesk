@@ -1,4 +1,5 @@
 import { Schema } from 'prosemirror-model';
+import { assetUrl, assetPath } from '@nosdesk/core/transport';
 import type { NodeSpec, MarkSpec, DOMOutputSpec } from 'prosemirror-model';
 
 const brDOM: DOMOutputSpec = ['br'];
@@ -155,7 +156,11 @@ export const nodes: {[key: string]: NodeSpec} = {
             : null;
         const align = dom.getAttribute('data-align');
         return {
-          src: dom.getAttribute('src'),
+          // Store the portable path, never this platform's rendered URL: a
+          // paste inside the app re-enters here, and a `nosdesk-asset://` src
+          // written into the shared document would break that image for every
+          // other client.
+          src: assetPath(dom.getAttribute('src') ?? ''),
           title: dom.getAttribute('title'),
           alt: dom.getAttribute('alt'),
           width,
@@ -165,7 +170,7 @@ export const nodes: {[key: string]: NodeSpec} = {
     }],
     toDOM(node) {
       const domAttrs: Record<string, string> = {
-        src: node.attrs.src,
+        src: assetUrl(node.attrs.src),
         title: node.attrs.title,
         alt: node.attrs.alt
       };

@@ -276,8 +276,10 @@ const handleCloseInsights = () => {
   docPanel.close()
 }
 
-const handleRevisionRestored = () => {
-  fetchContent()
+const handleRevisionRestored = async (revisionNumber: number) => {
+  // The editor owns the revert: it is a transaction on the live ProseMirror
+  // view, which ySyncPlugin turns into the operations that reach every peer.
+  await editorRef.value?.restoreRevision(revisionNumber)
 }
 
 // Delete handler

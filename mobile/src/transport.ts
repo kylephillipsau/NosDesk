@@ -40,7 +40,12 @@ const ASSET_SCHEME_PREFIX = /android/i.test(navigator.userAgent)
   ? 'http://nosdesk-asset.localhost'
   : 'nosdesk-asset://localhost'
 
-configureAssetUrl((path) => (path.startsWith('/') ? `${ASSET_SCHEME_PREFIX}${path}` : path))
+configureAssetUrl(
+  (path) => (path.startsWith('/') ? `${ASSET_SCHEME_PREFIX}${path}` : path),
+  // The inverse. Both prefixes are stripped, not just this platform's, so an
+  // iOS-authored paste normalises correctly on Android and the reverse.
+  (url) => url.replace(/^(?:nosdesk-asset:\/\/localhost|http:\/\/nosdesk-asset\.localhost)/, '')
+)
 
 /**
  * Push the current bearer + API origin to the Rust asset proxy so it can

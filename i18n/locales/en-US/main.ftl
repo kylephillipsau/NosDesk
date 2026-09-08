@@ -3426,6 +3426,8 @@ editor-insert-menu-blockquote = Blockquote
 editor-insert-menu-code-block = Code Block
 editor-insert-menu-link = Link
 editor-insert-menu-embed-document = Embed Document
+editor-insert-menu-image = Image
+editor-insert-menu-take-photo = Take Photo
 
 # Editor: code block language prompt (CollaborativeEditor)
 editor-code-block-language-prompt = Enter language for syntax highlighting (optional):

@@ -3291,6 +3291,8 @@ editor-insert-menu-blockquote = Citation
 editor-insert-menu-code-block = Bloc de code
 editor-insert-menu-link = Lien
 editor-insert-menu-embed-document = Intégrer un document
+editor-insert-menu-image = Image
+editor-insert-menu-take-photo = Prendre une photo
 
 # Éditeur : invite de langage du bloc de code (CollaborativeEditor)
 editor-code-block-language-prompt = Langage pour la coloration syntaxique (facultatif) :
