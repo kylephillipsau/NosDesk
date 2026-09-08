@@ -444,9 +444,15 @@ onMounted(async () => {
       <!-- Mobile Search Bar (positioned above bottom nav, hidden on print) -->
       <MobileSearchBar class="print:hidden" />
 
-      <!-- Scrollable content with bottom padding for mobile nav (+ search bar when active) -->
+      <!-- Scrollable content. Below `sm` the padding clears the app's own bottom
+           nav (plus the search bar when active) and the safe area under it. From
+           `sm` up there is no bottom nav, but the safe area is still owed: on a
+           tablet the window runs under Android's navigation bar, and `sm:pb-0`
+           used to hand content straight to it. Responsive utilities are emitted
+           after base ones, so the `sm:` rule wins without a duplicate base
+           utility fighting it. -->
       <main
-        class="flex min-h-0 flex-1 flex-col overflow-hidden sm:pb-0"
+        class="flex min-h-0 flex-1 flex-col overflow-hidden sm:pb-[env(safe-area-inset-bottom)]"
         :class="isMobileSearchActive ? 'pb-[calc(6.5rem+env(safe-area-inset-bottom))]' : 'pb-[calc(3rem+env(safe-area-inset-bottom))]'"
       >
         <!-- Positioning context for the swipe layers. A flex child fills main's
