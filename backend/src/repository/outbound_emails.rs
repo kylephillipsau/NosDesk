@@ -125,8 +125,19 @@ pub fn enqueue_or_suppress(
 ) -> Result<OutboundEmail, DieselError> {
     use diesel::Connection;
     conn.transaction::<OutboundEmail, DieselError, _>(|conn| {
-        let suppressed =
-            crate::repository::email_suppressions::is_suppressed(conn, &new_row.recipient)?;
+        // `outbound_emails.workspace_id` defaults from the `app.workspace_id`
+        // GUC, so this is only ever reached on a pinned connection: an unpinned
+        // one could not satisfy the NOT NULL column below. Read that same pin
+        // for the suppression check rather than inventing a second source of
+        // truth, and refuse outright if it is somehow absent — an unpinned
+        // suppression check would report "not suppressed" and send.
+        let workspace_id =
+            crate::sync::session::current_workspace_id(conn)?.ok_or(DieselError::NotFound)?;
+        let suppressed = crate::repository::email_suppressions::is_suppressed(
+            conn,
+            workspace_id,
+            &new_row.recipient,
+        )?;
         if suppressed {
             let row: OutboundEmail = diesel::insert_into(outbound_emails::table)
                 .values(&new_row)

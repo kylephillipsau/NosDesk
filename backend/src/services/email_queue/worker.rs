@@ -164,23 +164,27 @@ pub async fn run_one_drain(
             // Reputation protection for conversation mail is enforced earlier, at
             // enqueue time (`enqueue_or_suppress`) and on the direct channel-send
             // paths, where the block is surfaced rather than silently dropping a
-            // human's reply. The list is global (no workspace_id), so a bypass
-            // read is fine; a failed lookup falls through to attempting the send.
-            let suppressed = if row.mail_class
-                == crate::models::outbound_email_mail_class::NOTIFICATION
-            {
-                // cross-tenant: email_suppressions is a global list (keyed by address, no workspace).
-                crate::sync::session::background_run(
-                    &pool,
-                    "background:email_queue_suppress_check",
-                    |conn| {
-                        crate::repository::email_suppressions::is_suppressed(conn, &row.recipient)
-                    },
-                )
-                .unwrap_or(false)
-            } else {
-                false
-            };
+            // human's reply. The list is scoped to the sending workspace, so
+            // the read is pinned to the queue row's own workspace; a failed
+            // lookup falls through to attempting the send.
+            let suppressed =
+                if row.mail_class == crate::models::outbound_email_mail_class::NOTIFICATION {
+                    crate::sync::session::run_in_workspace(
+                        &pool,
+                        "email_queue_suppress_check",
+                        row.workspace_id,
+                        |conn| {
+                            crate::repository::email_suppressions::is_suppressed(
+                                conn,
+                                row.workspace_id,
+                                &row.recipient,
+                            )
+                        },
+                    )
+                    .unwrap_or(false)
+                } else {
+                    false
+                };
             let outcome = if suppressed {
                 DispatchOutcome::Suppressed
             } else {
@@ -429,7 +433,7 @@ fn terminate_row(
                     // not a scrape of the error text, so it's safe to act on: a
                     // transient message that merely contained "550" can no longer
                     // masquerade as a hard reject. Dead-letter the row AND add the
-                    // recipient to the global suppression list so future sends
+                    // recipient to this workspace's suppression list so future sends
                     // short-circuit before the relay. Mirrors the inbound DSN path
                     // (`bounce_parser` -> `email_suppressions::upsert`).
                     if let Err(e) = repo::mark_dead(conn, row.id, &error, code.map(i32::from)) {
@@ -441,6 +445,7 @@ fn terminate_row(
                             reason: crate::models::email_suppression_reason::HARD_BOUNCE
                                 .to_string(),
                             bounce_diagnostic: Some(error.clone()),
+                            workspace_id: row.workspace_id,
                         };
                         match crate::repository::email_suppressions::upsert(conn, suppression) {
                             Ok(_) => {

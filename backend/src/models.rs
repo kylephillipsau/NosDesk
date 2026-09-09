@@ -7837,7 +7837,7 @@ pub mod outbound_email_mail_class {
 // migration `2026-05-12-110000_email_suppressions`.
 
 #[derive(Debug, Clone, Serialize, Deserialize, Queryable, Identifiable)]
-#[diesel(primary_key(email))]
+#[diesel(primary_key(workspace_id, email))]
 #[diesel(table_name = crate::schema::email_suppressions)]
 pub struct EmailSuppression {
     pub email: String,
@@ -7854,6 +7854,8 @@ pub struct EmailSuppression {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_seen_at: chrono::DateTime<chrono::Utc>,
     pub metadata: serde_json::Value,
+    /// The workspace this suppression belongs to; the list is per relationship.
+    pub workspace_id: i32,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -7862,6 +7864,10 @@ pub struct NewEmailSuppression {
     pub email: String,
     pub reason: String,
     pub bounce_diagnostic: Option<String>,
+    /// Suppression is per relationship, not per address: it records that
+    /// *this* workspace should stop writing to someone. Required with no
+    /// default, so a new write site has to say which workspace it speaks for.
+    pub workspace_id: i32,
 }
 
 /// Suppression reason constants.

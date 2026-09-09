@@ -208,7 +208,11 @@ async fn send_auto_ack(
     // it would re-bounce and erode the shared relay's reputation. The queued
     // paths check this in the worker; this direct send must too. Silent skip is
     // correct here, auto-ack is best-effort system mail, not a human's reply.
-    if crate::services::outbound_email::recipient_is_suppressed(pool, &recipient_email) {
+    if crate::services::outbound_email::recipient_is_suppressed(
+        pool,
+        ticket.workspace_id,
+        &recipient_email,
+    ) {
         tracing::info!(
             recipient = %recipient_email,
             ticket = ticket.id,

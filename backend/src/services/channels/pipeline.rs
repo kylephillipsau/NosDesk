@@ -268,6 +268,9 @@ pub async fn process_event(
                         email: recipient.to_string(),
                         reason: crate::models::email_suppression_reason::HARD_BOUNCE.to_string(),
                         bounce_diagnostic: report.diagnostic.clone(),
+                        // The bounce came back to this channel, so it is this
+                        // workspace's relationship that broke.
+                        workspace_id: channel.workspace_id,
                     };
                     if let Err(e) = crate::repository::email_suppressions::upsert(conn, new) {
                         warn!(
@@ -1645,8 +1648,12 @@ mod tests {
 
         // Recipient should be on the suppression list (5.1.1 is hard).
         assert!(
-            crate::repository::email_suppressions::is_suppressed(&mut conn, "bob@example.org")
-                .unwrap(),
+            crate::repository::email_suppressions::is_suppressed(
+                &mut conn,
+                ch.workspace_id,
+                "bob@example.org",
+            )
+            .unwrap(),
             "recipient should be auto-suppressed",
         );
 
@@ -1694,6 +1701,7 @@ mod tests {
         assert!(
             !crate::repository::email_suppressions::is_suppressed(
                 &mut conn,
+                ch.workspace_id,
                 "backed-up@example.org",
             )
             .unwrap(),
@@ -1742,13 +1750,21 @@ mod tests {
         // suppression list, even though only one outbound row
         // existed (we sent to the list, not to the members).
         assert!(
-            crate::repository::email_suppressions::is_suppressed(&mut conn, "alice@example.org")
-                .unwrap(),
+            crate::repository::email_suppressions::is_suppressed(
+                &mut conn,
+                ch.workspace_id,
+                "alice@example.org",
+            )
+            .unwrap(),
             "alice should be auto-suppressed",
         );
         assert!(
-            crate::repository::email_suppressions::is_suppressed(&mut conn, "carol@example.org")
-                .unwrap(),
+            crate::repository::email_suppressions::is_suppressed(
+                &mut conn,
+                ch.workspace_id,
+                "carol@example.org",
+            )
+            .unwrap(),
             "carol should be auto-suppressed",
         );
     }
@@ -1784,11 +1800,12 @@ mod tests {
 
         // Read the suppression row's bounce_count after the first
         // arrival; sanity-check it's 1.
-        let after_first = crate::repository::email_suppressions::list(&mut conn, 10, None)
-            .unwrap()
-            .into_iter()
-            .find(|s| s.email == "bob@example.org")
-            .expect("recipient should be suppressed after first DSN");
+        let after_first =
+            crate::repository::email_suppressions::list(&mut conn, ch.workspace_id, 10, None)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.email == "bob@example.org")
+                .expect("recipient should be suppressed after first DSN");
         assert_eq!(
             after_first.bounce_count, 1,
             "first arrival should leave bounce_count at 1"
@@ -1811,11 +1828,12 @@ mod tests {
 
         // bounce_count must remain at 1 — re-processing would have
         // bumped it via the upsert's ON CONFLICT DO UPDATE branch.
-        let after_second = crate::repository::email_suppressions::list(&mut conn, 10, None)
-            .unwrap()
-            .into_iter()
-            .find(|s| s.email == "bob@example.org")
-            .expect("recipient should still be suppressed");
+        let after_second =
+            crate::repository::email_suppressions::list(&mut conn, ch.workspace_id, 10, None)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.email == "bob@example.org")
+                .expect("recipient should still be suppressed");
         assert_eq!(
             after_second.bounce_count, 1,
             "duplicate DSN must not increment bounce_count, got {}",
@@ -1852,8 +1870,12 @@ mod tests {
         assert_eq!(outcome, PipelineOutcome::SkippedBounce);
 
         assert!(
-            !crate::repository::email_suppressions::is_suppressed(&mut conn, "valid@example.org")
-                .unwrap(),
+            !crate::repository::email_suppressions::is_suppressed(
+                &mut conn,
+                ch.workspace_id,
+                "valid@example.org",
+            )
+            .unwrap(),
             "5.7.x policy rejection must NOT auto-suppress (sender-side failure)",
         );
     }
