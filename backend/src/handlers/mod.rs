@@ -211,8 +211,14 @@ pub async fn get_comments_by_ticket_id(
     let ticket_id = access.ticket_id;
     debug!(ticket_id, "Getting comments for ticket");
 
+    // TicketAccess proves the caller may see the ticket. It says nothing about
+    // internal notes on it, so the audience is resolved separately here.
+    let audience = crate::repository::ticket_visibility::CommentAudience::from_auth(&access.auth);
+
     match tc.run(|conn| {
-        crate::repository::comments::get_comments_with_attachments_by_ticket_id(conn, ticket_id)
+        crate::repository::comments::get_comments_with_attachments_by_ticket_id(
+            conn, ticket_id, audience,
+        )
     }) {
         Ok(comments) => {
             // Serialize through serde so every field on
