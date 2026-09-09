@@ -790,7 +790,8 @@ pub async fn add_comment_to_ticket(
                                                 .filter(
                                                     workspace_members::role
                                                         .eq_any(vec!["owner", "admin", "agent"]),
-                                                ),
+                                                )
+                                                .filter(workspace_members::removed_at.is_null()),
                                         ),
                                     ),
                                 )

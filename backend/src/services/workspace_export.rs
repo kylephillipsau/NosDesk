@@ -261,6 +261,9 @@ fn load_workspace_meta(
         #[diesel(sql_type = Text)]
         user_uuid: String,
     }
+    // members-any-status: an export must round-trip history, and historical rows
+    // reference people who have since been removed; dropping them would fail the
+    // enforced user FK on import.
     let members: Vec<UuidRow> = sql_query(
         "SELECT user_uuid::text AS user_uuid FROM workspace_members WHERE workspace_id = $1 \
          ORDER BY user_uuid",
@@ -319,6 +322,7 @@ pub fn collect_workspace_rows(
     // who was removed from membership or was never a member (external requester);
     // omitting them would fail the enforced user FK on import. Each referencing
     // column lives on a workspace-scoped table, so every subquery is scoped by $1.
+    // members-any-status: as above, and the comment block above says so already.
     let mut union_parts =
         vec!["SELECT user_uuid FROM workspace_members WHERE workspace_id = $1".to_string()];
     for (tbl, col) in user_referencing_columns(conn)? {

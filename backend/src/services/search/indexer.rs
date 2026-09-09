@@ -468,6 +468,9 @@ pub fn rebuild_index(
     // its full workspace set as multi-valued workspace_id terms. A user with
     // no memberships gets an empty set and is unreachable (fail-closed).
     let all_memberships: Vec<(uuid::Uuid, i32)> = workspace_members::table
+        // A removed member must stop being searchable in that workspace; the
+        // row survives only so their name still resolves on old records.
+        .filter(workspace_members::removed_at.is_null())
         .select((
             workspace_members::user_uuid,
             workspace_members::workspace_id,

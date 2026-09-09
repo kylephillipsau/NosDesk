@@ -242,7 +242,8 @@ pub fn create_comment_with_annotation(
                                     .filter(
                                         crate::schema::workspace_members::role
                                             .eq_any(vec!["owner", "admin", "agent"]),
-                                    ),
+                                    )
+                                    .filter(crate::schema::workspace_members::removed_at.is_null()),
                             ),
                         ),
                     ),

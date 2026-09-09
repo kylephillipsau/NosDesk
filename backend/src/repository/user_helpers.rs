@@ -17,6 +17,7 @@ pub fn workspace_role(conn: &mut DbConnection, user_uuid: Uuid) -> Option<Worksp
     use crate::schema::workspace_members;
     workspace_members::table
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .select(workspace_members::role)
         .first::<String>(conn)
         .ok()
@@ -34,6 +35,7 @@ pub fn workspace_roles_batch(
     use crate::schema::workspace_members;
     workspace_members::table
         .filter(workspace_members::user_uuid.eq_any(user_uuids))
+        .filter(workspace_members::removed_at.is_null())
         .select((workspace_members::user_uuid, workspace_members::role))
         .load::<(Uuid, String)>(conn)
         .unwrap_or_default()
@@ -548,6 +550,7 @@ pub fn get_users_with_primary_emails(
         workspace_members::table
             .filter(workspace_members::workspace_id.eq(workspace_id))
             .filter(workspace_members::user_uuid.eq_any(&user_uuids))
+            .filter(workspace_members::removed_at.is_null())
             .select((workspace_members::user_uuid, workspace_members::role))
             .load::<(Uuid, String)>(conn)
             .unwrap_or_default()

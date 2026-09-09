@@ -2181,6 +2181,7 @@ diesel::table! {
         role -> Varchar,
         invited_at -> Timestamptz,
         accepted_at -> Nullable<Timestamptz>,
+        removed_at -> Nullable<Timestamptz>,
     }
 }
 
