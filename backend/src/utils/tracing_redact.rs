@@ -91,6 +91,12 @@ const ALLOWED_FIELDS: &[&str] = &[
     "workspace_id",
     // bounded enums + operational dimensions. No free text.
     "aggregate",
+    // Which realm a refresh token belongs to: exactly "agent" or "portal".
+    // Logged when a token is presented at the endpoint for the other realm,
+    // which is either an escalation attempt or a client bug. Without it the
+    // warning names neither realm and cannot be told apart from an ordinary
+    // expired-token line.
+    "audience",
     "category",
     "classification",
     // Push sender selection, logged once at boot: `mode` and `sender` are

@@ -1294,6 +1294,8 @@ diesel::table! {
         #[max_length = 64]
         replaced_by_hash -> Nullable<Varchar>,
         grace_expires_at -> Nullable<Timestamptz>,
+        #[max_length = 16]
+        audience -> Varchar,
     }
 }
 

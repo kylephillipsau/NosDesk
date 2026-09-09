@@ -2646,6 +2646,24 @@ pub async fn refresh_token(
         }
     };
 
+    // 1b. Realm check. This endpoint mints an AGENT session, so it must only
+    // accept an agent refresh token. Portal sign-in stores its refresh token in
+    // the same table; without this, a customer could present their own portal
+    // cookie here and receive a full staff session. Equality against the realm
+    // this endpoint serves, so an unrecognised audience fails closed.
+    if old_token.audience != crate::models::REFRESH_AUDIENCE_AGENT {
+        tracing::warn!(
+            audience = %old_token.audience,
+            "Refresh token presented at the agent endpoint from another realm"
+        );
+        // Revoke the family: presenting a portal credential here is either an
+        // escalation attempt or a client bug, and neither should keep a
+        // live token afterwards.
+        let _ =
+            crate::repository::refresh_tokens::revoke_token_family(&mut conn, &old_token.family_id);
+        return errors::unauthorized("Invalid or expired refresh token");
+    }
+
     // 2. Check if revoked
     if old_token.revoked_at.is_some() {
         tracing::warn!(
@@ -2776,6 +2794,9 @@ pub async fn refresh_token(
         expires_at: new_refresh_expires,
         session_id: Some(session_id),
         family_id: old_token.family_id,
+        // Carry the realm forward rather than re-stamping it: a rotation must
+        // never launder a token into a more privileged audience.
+        audience: old_token.audience.clone(),
     };
 
     if let Err(e) =

@@ -546,6 +546,7 @@ pub mod helpers {
                 expires_at: refresh_expires,
                 session_id: Some(*session_id),
                 family_id: *family_id,
+                audience: crate::models::REFRESH_AUDIENCE_AGENT.to_string(),
             },
         )
         .map_err(|e| {
@@ -596,6 +597,7 @@ pub mod helpers {
                 expires_at: refresh_expires,
                 session_id: Some(*session_id),
                 family_id: *family_id,
+                audience: crate::models::REFRESH_AUDIENCE_PORTAL.to_string(),
             },
         )
         .map_err(|e| {
