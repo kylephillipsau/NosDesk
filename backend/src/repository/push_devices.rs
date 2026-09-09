@@ -6,7 +6,6 @@
 
 use chrono::Utc;
 use diesel::prelude::*;
-use diesel::sql_types::{Array, Integer, Text, Uuid as SqlUuid};
 use uuid::Uuid;
 
 use crate::db::DbConnection;
