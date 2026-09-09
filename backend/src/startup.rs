@@ -798,12 +798,10 @@ pub fn configure_app(
             )
 
             // Authenticated, workspace-scoped tenant file serving. Its own
-            // scope so the wrap stack matches the main /api scope: dual_auth
-            // (cookie or Bearer + workspace-membership gate) registered last so
-            // it runs first and puts Claims in extensions, then token_scope
-            // enforces API-token scopes. These routes map to `Full`, so a
-            // narrowed token 403s here instead of slipping past scope
-            // enforcement (they used to sit outside any scope-wrapped tree).
+            // scope carrying dual_auth (cookie or Bearer + workspace-membership
+            // gate). API-token scopes are enforced inside the auth funnel
+            // itself, so they cover this tree without a second wrap; these
+            // routes map to `Full`, and a narrowed token 403s here.
             // The handlers add a per-ticket/asset visibility check via
             // TenantConn so a caller only reads files it can see in its own
             // workspace. Registered before the main /api scope so /api/files/*
@@ -811,9 +809,6 @@ pub fn configure_app(
             // so the `{filename:.*}` tail can't swallow it.
             .service(
                 web::scope("/api/files")
-                    .wrap(actix_web::middleware::from_fn(
-                        crate::middleware::token_scope::token_scope_middleware,
-                    ))
                     .wrap(actix_web::middleware::from_fn(crate::middleware::dual_auth_middleware))
                     .route("/tickets/{ticket_id}/notes/{filename:.*}", web::get().to(crate::handlers::serve_ticket_note_image))
                     .route("/tickets/{filename:.*}", web::get().to(crate::handlers::serve_ticket_file))
@@ -921,15 +916,10 @@ pub fn configure_app(
                     // this does not throttle long-lived connections. See
                     // security-audit-2026-06.
                     .wrap(RateLimiter::default())
-                    // Enforce API-token scopes. Registered before (so it
-                    // runs after) dual_auth, which puts Claims in
-                    // extensions. Cookie sessions and un-narrowed tokens
-                    // carry `full` and short-circuit; platform tokens are
-                    // exempt; a narrowed token must satisfy the route's
-                    // required scope.
-                    .wrap(actix_web::middleware::from_fn(
-                        crate::middleware::token_scope::token_scope_middleware,
-                    ))
+                    // Cookie or Bearer or `nsk_` API token. The funnel behind
+                    // this also enforces API-token scopes, so a narrowed token
+                    // must satisfy the route's required scope; cookie sessions
+                    // and un-narrowed tokens carry `full` and short-circuit.
                     .wrap(actix_web::middleware::from_fn(crate::middleware::dual_auth_middleware))
 
                     // Authentication Provider management (admin only) - simplified for environment-based config
@@ -1068,9 +1058,8 @@ pub fn configure_app(
                     .configure(crate::handlers::files::config)
 
                     // Collab-document image upload. Deliberately here rather
-                    // than under /api/collaboration: that scope carries
-                    // neither the rate limiter nor token-scope enforcement,
-                    // and a 10MB multipart write needs both.
+                    // than under /api/collaboration: that scope carries no rate
+                    // limiter, and a 10MB multipart write needs one.
                     .configure(crate::handlers::collab_images::config)
 
                     // ===== SSE / SEARCH / NOTIFICATIONS / BUG REPORTS =====

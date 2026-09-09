@@ -1,13 +1,15 @@
 //! API token scope enforcement.
 //!
 //! This module owns the route policy that maps an incoming request to
-//! the scope it requires, plus (step 3) the middleware that enforces it
-//! against a narrowed token's `ScopeSet`.
+//! the scope it requires, plus the predicate that enforces it against a
+//! narrowed token's `ScopeSet`. The predicate is called from
+//! `api_token::finalize`, so every authenticated request is checked at one
+//! point instead of wherever a wrap happens to be stacked.
 //!
 //! Design:
 //!   * `full` credentials (every cookie session and every un-narrowed
-//!     token) short-circuit in the middleware and never reach this
-//!     policy. Only deliberately-narrowed API tokens are constrained.
+//!     token) short-circuit before this policy is consulted. Only
+//!     deliberately-narrowed API tokens are constrained.
 //!   * The policy returns a `ScopeRequirement`. Anything not explicitly
 //!     mapped defaults to `Full`, which a narrowed token can never
 //!     satisfy, so a new or cross-cutting route fail-closes rather than
@@ -15,11 +17,7 @@
 //!   * Scope is a second, orthogonal layer: the handler's existing role
 //!     gate still runs. A request must pass both.
 
-use actix_web::body::MessageBody;
-use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::Method;
-use actix_web::middleware::Next;
-use actix_web::{Error, HttpMessage};
 
 use crate::models::Claims;
 use crate::utils::scopes::{Action, Domain, ScopeSet};
@@ -160,34 +158,22 @@ fn action_for(method: &Method, rest: &str) -> Action {
 /// pass both layers. (The control-plane provisioning surface is a
 /// separate scope with its own EdDSA-JWT auth, not an api_token, so it
 /// never reaches this middleware.)
-pub async fn token_scope_middleware(
-    req: ServiceRequest,
-    next: Next<impl MessageBody>,
-) -> Result<ServiceResponse<impl MessageBody>, Error> {
-    if scope_allows(&req) {
-        next.call(req).await
-    } else {
-        Err(actix_web::error::ErrorForbidden(
-            "API token scope does not permit this request",
-        ))
-    }
-}
-
-/// Whether the request's credential scope permits it. Borrow-scoped so
-/// the extensions borrow is dropped before the async `next.call`.
-fn scope_allows(req: &ServiceRequest) -> bool {
-    let ext = req.extensions();
-    let claims = match ext.get::<Claims>() {
-        // No claims: the auth layer already rejected, or this isn't an
-        // authenticated scope. Nothing for us to enforce.
-        None => return true,
-        Some(c) => c,
-    };
+/// Whether a credential's scope permits this request.
+///
+/// Enforcement is called from `api_token::finalize`, the one point every
+/// authenticated request passes, rather than from a middleware a new scope
+/// has to remember to stack. It used to be a wrap, stacked on `/api` and
+/// `/api/files` and nowhere else; `/api/collaboration` is registered as its
+/// own top-level scope with only the auth wrap, so a deliberately narrowed
+/// token reached `POST /api/collaboration/token` and traded itself for an
+/// unrestricted `collab` JWT. Nothing had to be wrong for that to happen,
+/// only forgotten, which is the argument for the funnel over the wrap.
+pub fn claims_may_call(claims: &Claims, method: &Method, path: &str) -> bool {
     // Cookie sessions and un-narrowed tokens carry `full`.
     if claims.scope == "full" {
         return true;
     }
-    match required_scope(req.method(), req.path()) {
+    match required_scope(method, path) {
         ScopeRequirement::Any => true,
         ScopeRequirement::Full => false,
         ScopeRequirement::Capability(domain, action) => {
@@ -203,6 +189,67 @@ mod tests {
 
     fn req(method: Method, path: &str) -> ScopeRequirement {
         required_scope(&method, path)
+    }
+
+    fn claims_scoped(scope: &str) -> Claims {
+        Claims {
+            sub: uuid::Uuid::new_v4().to_string(),
+            name: "Token".to_string(),
+            email: String::new(),
+            platform_role: "user".to_string(),
+            scope: scope.to_string(),
+            sid: None,
+            workspace_uuid: None,
+            exp: 0,
+            iat: 0,
+        }
+    }
+
+    /// The bypass this enforcement point exists to close. `/api/collaboration`
+    /// is its own top-level scope carrying only the auth wrap, so while
+    /// enforcement was a separate middleware stacked on `/api` and
+    /// `/api/files`, a token narrowed to something harmless reached
+    /// `POST /api/collaboration/token` and traded itself for an unrestricted
+    /// `collab` JWT, and from there a read/write socket on every document its
+    /// owner could see.
+    #[test]
+    fn a_narrowed_token_cannot_mint_a_collab_credential() {
+        let narrow = claims_scoped("notifications:read");
+        assert!(
+            !claims_may_call(&narrow, &Method::POST, "/api/collaboration/token"),
+            "a narrowed token must not mint a collab credential"
+        );
+        assert!(
+            !claims_may_call(&narrow, &Method::GET, "/api/collaboration/article/abc"),
+            "nor read a document body through the same unmapped tree"
+        );
+    }
+
+    #[test]
+    fn full_credentials_are_unaffected() {
+        let full = claims_scoped("full");
+        // Cookie sessions and un-narrowed tokens carry `full`; every path,
+        // mapped or not, must stay open to them or this move would have
+        // logged out the whole product.
+        for path in [
+            "/api/collaboration/token",
+            "/api/tickets/5",
+            "/api/files/tickets/x.png",
+            "/api/some/route/added/tomorrow",
+        ] {
+            assert!(
+                claims_may_call(&full, &Method::GET, path),
+                "full credential refused at {path}"
+            );
+            assert!(claims_may_call(&full, &Method::POST, path));
+        }
+    }
+
+    #[test]
+    fn a_narrowed_token_still_reaches_what_it_was_scoped_for() {
+        let reader = claims_scoped("tickets:read");
+        assert!(claims_may_call(&reader, &Method::GET, "/api/tickets/5"));
+        assert!(!claims_may_call(&reader, &Method::POST, "/api/tickets"));
     }
 
     #[test]
@@ -437,13 +484,36 @@ mod enforcement_tests {
         }
     }
 
-    /// Drive a request through an app wrapped only in the scope
-    /// middleware; the default handler returns 200, so the status is the
-    /// middleware's decision (200 allow / 403 deny).
+    /// Mirrors what `api_token::finalize` does with the predicate, so these
+    /// end-to-end cases keep testing enforcement after it moved out of a
+    /// middleware of its own. Claims absent means the real funnel was never
+    /// reached, which is an allow here for the same reason it was before.
+    async fn scope_gate(
+        req: actix_web::dev::ServiceRequest,
+        next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
+    ) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, actix_web::Error>
+    {
+        let allowed = req
+            .extensions()
+            .get::<Claims>()
+            .map(|c| claims_may_call(c, req.method(), req.path()))
+            .unwrap_or(true);
+        if allowed {
+            next.call(req).await
+        } else {
+            Err(actix_web::error::ErrorForbidden(
+                "API token scope does not permit this request",
+            ))
+        }
+    }
+
+    /// Drive a request through an app wrapped only in the scope gate; the
+    /// default handler returns 200, so the status is the gate's decision
+    /// (200 allow / 403 deny).
     async fn status_for(scope: Option<&str>, method: Method, path: &str) -> StatusCode {
         let app = actix_test::init_service(
             App::new()
-                .wrap(from_fn(token_scope_middleware))
+                .wrap(from_fn(scope_gate))
                 .default_service(web::to(|| async { HttpResponse::Ok().finish() })),
         )
         .await;
@@ -477,7 +547,9 @@ mod enforcement_tests {
 
     #[actix_web::test]
     async fn session_with_no_claims_passes_through() {
-        // Defensive: if dual_auth didn't insert claims, we don't block.
+        // Defensive: enforcement now lives inside the auth funnel, which only
+        // runs with claims in hand. A request that somehow arrives without
+        // them was never authenticated, so it is not ours to block.
         assert_eq!(
             status_for(None, Method::POST, "/api/tickets").await,
             StatusCode::OK

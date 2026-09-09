@@ -315,6 +315,19 @@ async fn finalize<B: MessageBody>(
     next: Next<B>,
     claims: Claims,
 ) -> Result<ServiceResponse<B>, Error> {
+    // Scope enforcement runs here, at the one point every authenticated
+    // request passes, rather than in a middleware each new scope has to
+    // remember to stack alongside the auth wrap. `/api/collaboration` is what
+    // forgetting looked like: it wrapped `dual_auth_middleware` but not the
+    // scope middleware, so a narrowed token reached
+    // `POST /api/collaboration/token` and traded itself for an unrestricted
+    // `collab` JWT. The policy already returned `Full` for that path; it was
+    // simply never asked.
+    if !crate::middleware::token_scope::claims_may_call(&claims, req.method(), req.path()) {
+        return Err(actix_web::error::ErrorForbidden(
+            "API token scope does not permit this request",
+        ));
+    }
     request_context::populate(&req, &claims);
     req.extensions_mut().insert(claims);
     next.call(req).await
