@@ -2599,7 +2599,225 @@ pub async fn revoke_all_other_sessions(
 
 // === TOKEN REFRESH HANDLER ===
 
-/// Refresh access token using refresh token (with reuse detection + grace period)
+/// The pair a successful rotation hands back to the caller.
+pub(crate) struct RotatedSession {
+    pub access_token: String,
+    pub refresh_token: String,
+}
+
+/// The realm-agnostic half of a token refresh: from "a refresh token was
+/// presented" through revocation, reuse detection, the session lookup, the
+/// absolute-lifetime ceiling, and rotation of the family.
+///
+/// Both the agent and the customer-portal endpoints go through this, so there
+/// is exactly ONE copy of the reuse-detection and family-revocation logic.
+/// Those are the security properties of the whole mechanism; a second copy
+/// would be a second thing to keep correct, and the two would drift.
+///
+/// What differs per realm is passed in: `expected_audience`, since a token from
+/// another realm is refused and its family revoked; and `mint_access`, which
+/// produces that realm's own access token. `mint_access` takes the connection
+/// so a realm can also run its own checks there: the portal needs the subject
+/// to still be a member of the origin's workspace, and running that inside the
+/// mint means a failure refuses before the family is rotated.
+pub(crate) fn rotate_refresh_family<F>(
+    conn: &mut crate::db::DbConnection,
+    request: &HttpRequest,
+    refresh_raw: &str,
+    expected_audience: &str,
+    mint_access: F,
+) -> Result<RotatedSession, HttpResponse>
+where
+    F: FnOnce(
+        &mut crate::db::DbConnection,
+        &crate::models::User,
+        &uuid::Uuid,
+    ) -> Result<String, HttpResponse>,
+{
+    let token_hash = JwtUtils::hash_refresh_token(refresh_raw);
+
+    let old_token =
+        match crate::repository::refresh_tokens::get_refresh_token_by_hash(conn, &token_hash) {
+            Ok(token) => token,
+            Err(_) => return Err(errors::unauthorized("Invalid or expired refresh token")),
+        };
+
+    // 1b. Realm check. Each endpoint mints a session for exactly one realm, so
+    // it must accept only a refresh token minted for that realm. Portal and
+    // agent tokens share this table, so without the check a customer could
+    // present a portal credential and receive a staff session. Equality against
+    // the caller's expected realm, so an unrecognised audience fails closed.
+    if old_token.audience != expected_audience {
+        tracing::warn!(
+            audience = %old_token.audience,
+            "Refresh token presented at an endpoint for another realm"
+        );
+        // Revoke the family: presenting a portal credential here is either an
+        // escalation attempt or a client bug, and neither should keep a
+        // live token afterwards.
+        let _ = crate::repository::refresh_tokens::revoke_token_family(conn, &old_token.family_id);
+        return Err(errors::unauthorized("Invalid or expired refresh token"));
+    }
+
+    // 2. Check if revoked
+    if old_token.revoked_at.is_some() {
+        tracing::warn!(
+            "Revoked refresh token presented, family={}",
+            old_token.family_id
+        );
+        return Err(errors::unauthorized("Refresh token has been revoked"));
+    }
+
+    // 3. Reuse detection
+    if old_token.is_used {
+        let now = chrono::Utc::now().naive_utc();
+        let within_grace = old_token.grace_expires_at.is_some_and(|grace| grace > now);
+
+        if !within_grace {
+            // Token reuse outside grace period — potential theft!
+            tracing::warn!(
+                "Refresh token reuse detected outside grace period! Revoking family={}",
+                old_token.family_id
+            );
+            let _ =
+                crate::repository::refresh_tokens::revoke_token_family(conn, &old_token.family_id);
+            if let Some(sid) = old_token.session_id {
+                let _ = crate::repository::active_sessions::revoke_session_by_uuid(conn, &sid);
+            }
+            return Err(errors::unauthorized(
+                "Token reuse detected — session revoked for security",
+            ));
+        }
+        // Within grace period — allow (concurrent tab scenario)
+        tracing::debug!(
+            "Refresh token reuse within grace period, family={}",
+            old_token.family_id
+        );
+    }
+
+    // 4. Get user
+    let user = match repository::get_user_by_uuid(&old_token.user_uuid, conn) {
+        Ok(user) => user,
+        Err(_) => {
+            return Err(errors::unauthorized("User not found"));
+        }
+    };
+
+    // 5. Determine session_id (from token, or create new session for tokens without one)
+    let (session_id, session_created_at) = match old_token.session_id {
+        Some(sid) => {
+            match crate::repository::active_sessions::get_session_by_session_id(conn, &sid) {
+                Ok(session) => (sid, session.created_at),
+                // The session is gone (revoked, evicted at the cap, or pruned
+                // as expired). The refresh token outlives it only in the window
+                // before the cascade lands, so treat it as revoked.
+                Err(_) => return Err(errors::unauthorized("Session no longer active")),
+            }
+        }
+        None => {
+            // Token created before this migration — create a new session
+            match create_session_record(&user.uuid, request, conn, None) {
+                Ok(session) => (session.session_id, session.created_at),
+                Err(e) => {
+                    tracing::error!("Failed to create session during refresh: {}", e);
+                    return Err(errors::internal("Failed to create session"));
+                }
+            }
+        }
+    };
+
+    // 5b. Absolute lifetime. `created_at` never moves, so no amount of
+    // refreshing extends a session past the ceiling (ASVS 7.3.2). Revoke
+    // rather than just refusing, so the dead row doesn't linger until the
+    // hourly cleanup and the user is forced to re-authenticate.
+    let absolute_deadline = crate::utils::session_policy::absolute_deadline(session_created_at);
+    if absolute_deadline <= chrono::Utc::now().naive_utc() {
+        tracing::info!(
+            user_uuid = %user.uuid,
+            %session_id,
+            "Session reached its absolute lifetime; revoking"
+        );
+        let _ = crate::repository::refresh_tokens::revoke_token_family(conn, &old_token.family_id);
+        let _ = crate::repository::active_sessions::revoke_session_by_uuid(conn, &session_id);
+        let _ = crate::utils::security_events::record_security_event(
+            conn,
+            crate::utils::security_events::SecurityEventInput {
+                user_uuid: Some(user.uuid),
+                event_type: "session_revoked",
+                severity: "info",
+                details: Some(json!({ "reason": "absolute_lifetime_reached" })),
+                request: Some(request),
+            },
+        );
+        return Err(errors::unauthorized(
+            "Session expired, please sign in again",
+        ));
+    }
+
+    // 6. Mint the realm's access token. Deliberately before the family is
+    // rotated: a mint failure then leaves the presented token still usable and
+    // the caller simply retries. Rotating first would consume their token and
+    // strand them on a credential they never received.
+    let new_access_token = mint_access(conn, &user, &session_id)?;
+
+    // 7. Generate new refresh token
+    let new_refresh_raw = JwtUtils::generate_refresh_token();
+    let new_refresh_hash = JwtUtils::hash_refresh_token(&new_refresh_raw);
+
+    // 8. Mark old token used (if not already)
+    if !old_token.is_used {
+        let grace_until = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(5);
+        if let Err(e) = crate::repository::refresh_tokens::mark_token_used(
+            conn,
+            &token_hash,
+            &new_refresh_hash,
+            grace_until,
+        ) {
+            tracing::error!("Failed to mark old refresh token as used: {}", e);
+        }
+    }
+
+    // 9. Create new refresh token with same family_id and session_id. Bounded
+    // by the session's ceiling too, so a live refresh token can't outlast the
+    // session it belongs to.
+    let new_refresh_expires =
+        crate::utils::session_policy::next_expiry(session_created_at).min(absolute_deadline);
+    let new_refresh_record = crate::models::NewRefreshToken {
+        token_hash: new_refresh_hash,
+        user_uuid: user.uuid,
+        expires_at: new_refresh_expires,
+        session_id: Some(session_id),
+        family_id: old_token.family_id,
+        // Carry the realm forward rather than re-stamping it: a rotation must
+        // never launder a token into a more privileged audience.
+        audience: old_token.audience.clone(),
+    };
+
+    if let Err(e) =
+        crate::repository::refresh_tokens::create_refresh_token(conn, new_refresh_record)
+    {
+        tracing::error!("Failed to store new refresh token: {}", e);
+        return Err(errors::internal("Failed to create refresh token"));
+    }
+
+    // 10. Update session activity. The sliding window is clamped to the
+    // ceiling, so expires_at converges on it as the session ages out.
+    let new_session_expires = crate::utils::session_policy::next_expiry(session_created_at);
+    if let Err(e) = crate::repository::active_sessions::update_session_activity(
+        conn,
+        &session_id,
+        new_session_expires,
+    ) {
+        tracing::warn!("Failed to update session activity: {}", e);
+    }
+    Ok(RotatedSession {
+        access_token: new_access_token,
+        refresh_token: new_refresh_raw,
+    })
+}
+
+/// Refresh an agent access token (reuse detection and grace period live in
+/// [`rotate_refresh_family`]).
 pub async fn refresh_token(
     db_pool: web::Data<crate::db::Pool>,
     // Optional so web clients, which POST an empty body and carry the refresh
@@ -2634,188 +2852,21 @@ pub async fn refresh_token(
         }
     };
 
-    let token_hash = JwtUtils::hash_refresh_token(&refresh_raw);
-
-    let old_token = match crate::repository::refresh_tokens::get_refresh_token_by_hash(
+    let rotated = match rotate_refresh_family(
         &mut conn,
-        &token_hash,
+        &request,
+        &refresh_raw,
+        crate::models::REFRESH_AUDIENCE_AGENT,
+        |_conn, user, session_id| {
+            JwtUtils::create_token(user, session_id)
+                .map_err(|_| errors::internal("Failed to create access token"))
+        },
     ) {
-        Ok(token) => token,
-        Err(_) => {
-            return errors::unauthorized("Invalid or expired refresh token");
-        }
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
-
-    // 1b. Realm check. This endpoint mints an AGENT session, so it must only
-    // accept an agent refresh token. Portal sign-in stores its refresh token in
-    // the same table; without this, a customer could present their own portal
-    // cookie here and receive a full staff session. Equality against the realm
-    // this endpoint serves, so an unrecognised audience fails closed.
-    if old_token.audience != crate::models::REFRESH_AUDIENCE_AGENT {
-        tracing::warn!(
-            audience = %old_token.audience,
-            "Refresh token presented at the agent endpoint from another realm"
-        );
-        // Revoke the family: presenting a portal credential here is either an
-        // escalation attempt or a client bug, and neither should keep a
-        // live token afterwards.
-        let _ =
-            crate::repository::refresh_tokens::revoke_token_family(&mut conn, &old_token.family_id);
-        return errors::unauthorized("Invalid or expired refresh token");
-    }
-
-    // 2. Check if revoked
-    if old_token.revoked_at.is_some() {
-        tracing::warn!(
-            "Revoked refresh token presented, family={}",
-            old_token.family_id
-        );
-        return errors::unauthorized("Refresh token has been revoked");
-    }
-
-    // 3. Reuse detection
-    if old_token.is_used {
-        let now = chrono::Utc::now().naive_utc();
-        let within_grace = old_token.grace_expires_at.is_some_and(|grace| grace > now);
-
-        if !within_grace {
-            // Token reuse outside grace period — potential theft!
-            tracing::warn!(
-                "Refresh token reuse detected outside grace period! Revoking family={}",
-                old_token.family_id
-            );
-            let _ = crate::repository::refresh_tokens::revoke_token_family(
-                &mut conn,
-                &old_token.family_id,
-            );
-            if let Some(sid) = old_token.session_id {
-                let _ = crate::repository::active_sessions::revoke_session_by_uuid(&mut conn, &sid);
-            }
-            return errors::unauthorized("Token reuse detected — session revoked for security");
-        }
-        // Within grace period — allow (concurrent tab scenario)
-        tracing::debug!(
-            "Refresh token reuse within grace period, family={}",
-            old_token.family_id
-        );
-    }
-
-    // 4. Get user
-    let user = match repository::get_user_by_uuid(&old_token.user_uuid, &mut conn) {
-        Ok(user) => user,
-        Err(_) => {
-            return errors::unauthorized("User not found");
-        }
-    };
-
-    // 5. Determine session_id (from token, or create new session for tokens without one)
-    let (session_id, session_created_at) = match old_token.session_id {
-        Some(sid) => {
-            match crate::repository::active_sessions::get_session_by_session_id(&mut conn, &sid) {
-                Ok(session) => (sid, session.created_at),
-                // The session is gone (revoked, evicted at the cap, or pruned
-                // as expired). The refresh token outlives it only in the window
-                // before the cascade lands, so treat it as revoked.
-                Err(_) => return errors::unauthorized("Session no longer active"),
-            }
-        }
-        None => {
-            // Token created before this migration — create a new session
-            match create_session_record(&user.uuid, &request, &mut conn, None) {
-                Ok(session) => (session.session_id, session.created_at),
-                Err(e) => {
-                    tracing::error!("Failed to create session during refresh: {}", e);
-                    return errors::internal("Failed to create session");
-                }
-            }
-        }
-    };
-
-    // 5b. Absolute lifetime. `created_at` never moves, so no amount of
-    // refreshing extends a session past the ceiling (ASVS 7.3.2). Revoke
-    // rather than just refusing, so the dead row doesn't linger until the
-    // hourly cleanup and the user is forced to re-authenticate.
-    let absolute_deadline = crate::utils::session_policy::absolute_deadline(session_created_at);
-    if absolute_deadline <= chrono::Utc::now().naive_utc() {
-        tracing::info!(
-            user_uuid = %user.uuid,
-            %session_id,
-            "Session reached its absolute lifetime; revoking"
-        );
-        let _ =
-            crate::repository::refresh_tokens::revoke_token_family(&mut conn, &old_token.family_id);
-        let _ = crate::repository::active_sessions::revoke_session_by_uuid(&mut conn, &session_id);
-        let _ = crate::utils::security_events::record_security_event(
-            &mut conn,
-            crate::utils::security_events::SecurityEventInput {
-                user_uuid: Some(user.uuid),
-                event_type: "session_revoked",
-                severity: "info",
-                details: Some(json!({ "reason": "absolute_lifetime_reached" })),
-                request: Some(&request),
-            },
-        );
-        return errors::unauthorized("Session expired, please sign in again");
-    }
-
-    // 6. Generate new access JWT with same sid
-    let new_access_token = match JwtUtils::create_token(&user, &session_id) {
-        Ok(token) => token,
-        Err(_) => {
-            return errors::internal("Failed to create access token");
-        }
-    };
-
-    // 7. Generate new refresh token
-    let new_refresh_raw = JwtUtils::generate_refresh_token();
-    let new_refresh_hash = JwtUtils::hash_refresh_token(&new_refresh_raw);
-
-    // 8. Mark old token used (if not already)
-    if !old_token.is_used {
-        let grace_until = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(5);
-        if let Err(e) = crate::repository::refresh_tokens::mark_token_used(
-            &mut conn,
-            &token_hash,
-            &new_refresh_hash,
-            grace_until,
-        ) {
-            tracing::error!("Failed to mark old refresh token as used: {}", e);
-        }
-    }
-
-    // 9. Create new refresh token with same family_id and session_id. Bounded
-    // by the session's ceiling too, so a live refresh token can't outlast the
-    // session it belongs to.
-    let new_refresh_expires =
-        crate::utils::session_policy::next_expiry(session_created_at).min(absolute_deadline);
-    let new_refresh_record = crate::models::NewRefreshToken {
-        token_hash: new_refresh_hash,
-        user_uuid: user.uuid,
-        expires_at: new_refresh_expires,
-        session_id: Some(session_id),
-        family_id: old_token.family_id,
-        // Carry the realm forward rather than re-stamping it: a rotation must
-        // never launder a token into a more privileged audience.
-        audience: old_token.audience.clone(),
-    };
-
-    if let Err(e) =
-        crate::repository::refresh_tokens::create_refresh_token(&mut conn, new_refresh_record)
-    {
-        tracing::error!("Failed to store new refresh token: {}", e);
-        return errors::internal("Failed to create refresh token");
-    }
-
-    // 10. Update session activity. The sliding window is clamped to the
-    // ceiling, so expires_at converges on it as the session ages out.
-    let new_session_expires = crate::utils::session_policy::next_expiry(session_created_at);
-    if let Err(e) = crate::repository::active_sessions::update_session_activity(
-        &mut conn,
-        &session_id,
-        new_session_expires,
-    ) {
-        tracing::warn!("Failed to update session activity: {}", e);
-    }
+    let new_access_token = rotated.access_token;
+    let new_refresh_raw = rotated.refresh_token;
 
     // 11. Return new tokens, the way the client asked for them.
     let new_csrf_token = crate::utils::csrf::generate_csrf_token();
@@ -2986,6 +3037,158 @@ mod tests {
             Some(user_uuid.to_string().as_str())
         );
         assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("authuser"));
+    }
+
+    // =========================================================================
+    // REFRESH ROTATION CORE
+    //
+    // `rotate_refresh_family` holds the only copy of realm checking, reuse
+    // detection and family revocation; the agent and portal endpoints are thin
+    // wrappers over it. The endpoint tests above cover the wiring, so these
+    // drive the core directly and cover the properties the sharing exists to
+    // guarantee.
+    // =========================================================================
+
+    /// A user, a session, and one live refresh token minted in `audience`.
+    /// Returns the raw token (only its hash is stored) and the family id.
+    fn seed_refresh(
+        conn: &mut crate::db::DbConnection,
+        request: &HttpRequest,
+        audience: &str,
+    ) -> (String, uuid::Uuid) {
+        let user = TestFixtures::create_user(conn, "rotation subject", "user");
+        let session = create_session_record(&user.uuid, request, conn, None).expect("session");
+        let raw = JwtUtils::generate_refresh_token();
+        let family_id = uuid::Uuid::new_v4();
+        crate::repository::refresh_tokens::create_refresh_token(
+            conn,
+            crate::models::NewRefreshToken {
+                token_hash: JwtUtils::hash_refresh_token(&raw),
+                user_uuid: user.uuid,
+                expires_at: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
+                session_id: Some(session.session_id),
+                family_id,
+                audience: audience.to_string(),
+            },
+        )
+        .expect("seed refresh token");
+        (raw, family_id)
+    }
+
+    /// Every row in the family, as (is_used, revoked, audience).
+    fn family_rows(
+        conn: &mut crate::db::DbConnection,
+        family_id: &uuid::Uuid,
+    ) -> Vec<(bool, bool, String)> {
+        use crate::schema::refresh_tokens;
+        use diesel::prelude::*;
+        refresh_tokens::table
+            .filter(refresh_tokens::family_id.eq(family_id))
+            .select((
+                refresh_tokens::is_used,
+                refresh_tokens::revoked_at.is_not_null(),
+                refresh_tokens::audience,
+            ))
+            .load(conn)
+            .expect("load family")
+    }
+
+    fn mints_access(
+        _conn: &mut crate::db::DbConnection,
+        _user: &crate::models::User,
+        _sid: &uuid::Uuid,
+    ) -> Result<String, HttpResponse> {
+        Ok("access".to_string())
+    }
+
+    #[actix_web::test]
+    async fn rotation_refuses_a_token_from_the_other_realm_and_revokes_its_family() {
+        use crate::models::{REFRESH_AUDIENCE_AGENT, REFRESH_AUDIENCE_PORTAL};
+
+        // Both directions: neither realm may accept the other's credential.
+        for (minted, presented_at) in [
+            (REFRESH_AUDIENCE_PORTAL, REFRESH_AUDIENCE_AGENT),
+            (REFRESH_AUDIENCE_AGENT, REFRESH_AUDIENCE_PORTAL),
+        ] {
+            let pool = setup_test_pool();
+            let mut conn = pool.get().expect("conn");
+            let request = test::TestRequest::default().to_http_request();
+            let (raw, family_id) = seed_refresh(&mut conn, &request, minted);
+
+            let result =
+                rotate_refresh_family(&mut conn, &request, &raw, presented_at, mints_access);
+
+            assert!(
+                result.is_err(),
+                "a {minted} token must not be exchanged at the {presented_at} endpoint"
+            );
+            let rows = family_rows(&mut conn, &family_id);
+            assert_eq!(rows.len(), 1, "a refused exchange must not mint anything");
+            assert!(
+                rows[0].1,
+                "presenting a {minted} token at the {presented_at} endpoint must revoke the family"
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn rotation_carries_the_realm_forward_and_spends_the_presented_token() {
+        let pool = setup_test_pool();
+        let mut conn = pool.get().expect("conn");
+        let request = test::TestRequest::default().to_http_request();
+        let (raw, family_id) =
+            seed_refresh(&mut conn, &request, crate::models::REFRESH_AUDIENCE_PORTAL);
+
+        let rotated = rotate_refresh_family(
+            &mut conn,
+            &request,
+            &raw,
+            crate::models::REFRESH_AUDIENCE_PORTAL,
+            mints_access,
+        )
+        .expect("matching realm rotates");
+        assert_ne!(
+            rotated.refresh_token, raw,
+            "rotation must issue a new token"
+        );
+
+        let rows = family_rows(&mut conn, &family_id);
+        assert_eq!(rows.len(), 2, "the family gains the replacement");
+        assert!(
+            rows.iter()
+                .all(|(_, _, audience)| audience == crate::models::REFRESH_AUDIENCE_PORTAL),
+            "rotation must not launder a token into another realm: {rows:?}"
+        );
+        assert_eq!(
+            rows.iter().filter(|(is_used, _, _)| *is_used).count(),
+            1,
+            "exactly the presented token is spent: {rows:?}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_failed_access_mint_leaves_the_presented_token_usable() {
+        let pool = setup_test_pool();
+        let mut conn = pool.get().expect("conn");
+        let request = test::TestRequest::default().to_http_request();
+        let (raw, family_id) =
+            seed_refresh(&mut conn, &request, crate::models::REFRESH_AUDIENCE_AGENT);
+
+        let result = rotate_refresh_family(
+            &mut conn,
+            &request,
+            &raw,
+            crate::models::REFRESH_AUDIENCE_AGENT,
+            |_, _, _| Err(errors::internal("mint failed")),
+        );
+        assert!(result.is_err());
+
+        // The access token is minted before the family is rotated, so a mint
+        // failure is not allowed to consume the caller's only credential.
+        let rows = family_rows(&mut conn, &family_id);
+        assert_eq!(rows.len(), 1, "nothing was minted");
+        assert!(!rows[0].0, "the presented token must still be usable");
+        assert!(!rows[0].1, "and its family must not be revoked");
     }
 }
 

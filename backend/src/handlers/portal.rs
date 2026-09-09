@@ -48,7 +48,9 @@ use diesel::prelude::*;
 /// `/api/portal/auth` scope in main.rs (paths are scope-relative).
 pub fn auth_config(cfg: &mut web::ServiceConfig) {
     cfg.route("/magic-link", web::post().to(request_magic_link))
-        .route("/callback", web::get().to(magic_link_callback));
+        .route("/callback", web::get().to(magic_link_callback))
+        // The portal refresh cookie is Path-scoped to exactly this route.
+        .route("/refresh", web::post().to(refresh_portal_session));
 }
 
 /// Authenticated customer-portal routes, mounted inside the `/api/portal` scope
@@ -185,6 +187,95 @@ pub fn establish_portal_session(
             "csrf_token": session.csrf_token,
             "workspace_uuid": workspace_uuid,
         })))
+}
+
+/// `POST /api/portal/auth/refresh` — rotate a customer-portal session.
+///
+/// The portal refresh cookie has always been `Path`-scoped to this route, but
+/// the route did not exist, so a portal session simply died when the 15-minute
+/// access cookie expired. The route existing does not by itself fix that: no
+/// portal client calls it yet, so the sessions still die until one does. What
+/// it fixes now is the shape, so that when a client is written it rotates
+/// through the audited path instead of growing its own.
+///
+/// Rotation runs through [`rotate_refresh_family`], the same code the agent
+/// endpoint uses, so reuse detection, family revocation and the absolute
+/// session ceiling behave identically here. The two realm-specific parts are
+/// passed in: the portal audience, which refuses an agent token presented here
+/// just as the agent endpoint refuses a portal one, and the portal access
+/// token, which is scoped and bound to this workspace.
+pub async fn refresh_portal_session(
+    db_pool: web::Data<crate::db::Pool>,
+    request: HttpRequest,
+) -> HttpResponse {
+    // Read from extensions rather than via the extractor, matching
+    // `magic_link_callback` in this same origin-resolved scope: an unknown
+    // origin is a 400, not a 500.
+    let Some(ctx) = request.extensions().get::<WorkspaceContext>().cloned() else {
+        return errors::bad_request("No workspace for this origin");
+    };
+
+    let Some(refresh_raw) = request
+        .cookie(crate::utils::cookies::PORTAL_REFRESH_TOKEN_COOKIE)
+        .map(|c| c.value().to_string())
+        .filter(|t| !t.is_empty())
+    else {
+        return errors::unauthorized("Refresh token not found");
+    };
+
+    let mut conn = match crate::handlers::helpers::db_conn(&db_pool) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+
+    let workspace_uuid = ctx.workspace_uuid;
+    let workspace_id = ctx.workspace_id;
+    let rotated = match crate::handlers::auth::rotate_refresh_family(
+        &mut conn,
+        &request,
+        &refresh_raw,
+        crate::models::REFRESH_AUDIENCE_PORTAL,
+        |conn, user, session_id| {
+            // A refresh cookie proves a portal session existed, not that it was
+            // for the workspace this origin serves. Re-check membership on
+            // every rotation so a removed customer's session dies at the next
+            // refresh, and so a cookie replayed at another tenant's origin
+            // never mints a token bound to that tenant. Running it here, inside
+            // the mint, means the refusal lands before the family is rotated.
+            //
+            // Refuse without revoking the family, unlike the realm mismatch
+            // above it. That one can only be a copied credential; this one
+            // cannot be told apart from the ordinary case of a customer whose
+            // membership was removed, and burning their family adds nothing
+            // once the refresh is already refused.
+            require_workspace_membership(conn, workspace_id, user.uuid)
+                .map_err(|_| errors::unauthorized("Invalid or expired refresh token"))?;
+            crate::utils::jwt::JwtUtils::create_portal_token(user, workspace_uuid, session_id)
+                .map_err(|_| errors::internal("Failed to create access token"))
+        },
+    ) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // Portal clients are browsers, so the rotated tokens go back as cookies
+    // only; there is no bearer mode to serve here.
+    let csrf_token = crate::utils::csrf::generate_csrf_token();
+    HttpResponse::Ok()
+        .cookie(crate::utils::cookies::create_portal_access_cookie(
+            &rotated.access_token,
+        ))
+        .cookie(crate::utils::cookies::create_portal_refresh_cookie(
+            &rotated.refresh_token,
+        ))
+        .cookie(crate::utils::cookies::create_portal_csrf_cookie(
+            &csrf_token,
+        ))
+        .json(json!({
+            "success": true,
+            "csrf_token": csrf_token,
+            "workspace_uuid": workspace_uuid,
+        }))
 }
 
 // --- Magic-link sign-in ---
