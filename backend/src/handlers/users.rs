@@ -730,6 +730,7 @@ fn get_device_counts_batch(user_uuids: &[Uuid], conn: &mut DbConnection) -> Hash
 pub async fn get_user_by_uuid(
     uuid_path: web::Path<String>,
     pool: web::Data<crate::db::Pool>,
+    ws: WorkspaceContext,
     req: HttpRequest,
 ) -> impl Responder {
     let uuid_str = uuid_path.into_inner();
@@ -748,13 +749,21 @@ pub async fn get_user_by_uuid(
     // resolves under RLS (workspace_members is workspace-isolated).
     helpers::pin_request_workspace(&req, &mut conn);
 
-    match repository::get_user_by_uuid(&user_uuid_parsed, &mut conn) {
-        Ok(user) => {
+    // Resolve through the membership join, not by uuid alone. `users` has no
+    // RLS (an account spans workspaces, so there is no column to key on), and
+    // the pin above only scopes the RLS-bearing tables joined alongside it, so
+    // a bare `find(uuid)` here read any user in the deployment — name, avatar
+    // and primary email — for any authenticated member of any workspace.
+    match repository::directory::find_member(&mut conn, ws.workspace_id, user_uuid_parsed) {
+        Ok(Some(user)) => {
             // Use helper function to fetch primary email from user_emails table
             let user_response =
                 repository::user_helpers::get_user_with_primary_email(user, &mut conn);
             HttpResponse::Ok().json(user_response)
         }
+        // A stranger is indistinguishable from a missing row, so this does not
+        // become an oracle for which uuids exist in other workspaces.
+        Ok(None) => errors::not_found_msg("User not found"),
         Err(_) => errors::not_found_msg("User not found"),
     }
 }
@@ -793,7 +802,10 @@ pub async fn get_users_batch(
     // Convert to Vec for the repository function
     let uuids_vec: Vec<Uuid> = valid_uuids.into_iter().collect();
 
-    match repository::get_users_by_uuids(&uuids_vec, &mut conn) {
+    // Same membership join as the singular lookup: a batch endpoint must not
+    // become a cheaper oracle for the identities the singular one now hides.
+    // Unknown uuids are simply absent from the response.
+    match repository::directory::find_members(&mut conn, ws.workspace_id, &uuids_vec) {
         Ok(users) => {
             // Convert users to UserResponse with emails (batch fetch for efficiency)
             let user_responses = repository::user_helpers::get_users_with_primary_emails(

@@ -20,12 +20,17 @@ use crate::models::{
 use crate::repository::user_contact as repo;
 use crate::services::custom_fields::schema as field_schema;
 
-/// Contact-mutation gate shared by the handlers: self, workspace-admin, OR an
-/// agent editing a REQUESTER (a `member`) of this workspace. Agents log and
-/// manage customers, but never edit another staff member's contact (that stays
-/// self-or-admin). Returns the forbidden response to early-return, or None when
-/// authorized.
-fn guard_contact_edit(
+/// Contact-access gate shared by every handler in this module, read and write:
+/// self, workspace-admin, OR an agent acting on a REQUESTER (a `member`) of
+/// this workspace. Agents log and manage customers, but never touch another
+/// staff member's contact details (that stays self-or-admin). Returns the
+/// forbidden response to early-return, or None when authorized.
+///
+/// The reads used to skip this, taking `AuthContext` and binding it to `_auth`,
+/// which contradicted the contract stated at the top of this module and left
+/// any workspace member able to read any other member's phone numbers and
+/// postal addresses. One gate, both directions, so they cannot drift again.
+fn guard_contact_access(
     auth: &AuthContext,
     tc: &mut TenantConn,
     user_uuid: Uuid,
@@ -206,9 +211,12 @@ fn empty_profile(user_uuid: Uuid) -> Value {
 pub async fn get_user_profile_fields(
     mut tc: TenantConn,
     params: web::Path<Uuid>,
-    _auth: AuthContext,
+    auth: AuthContext,
 ) -> impl Responder {
     let user_uuid = params.into_inner();
+    if let Some(denied) = guard_contact_access(&auth, &mut tc, user_uuid) {
+        return denied;
+    }
     match tc.run(|conn| repo::get_profile(conn, user_uuid)) {
         Ok(Some(profile)) => HttpResponse::Ok().json(profile),
         Ok(None) => HttpResponse::Ok().json(empty_profile(user_uuid)),
@@ -287,9 +295,12 @@ pub async fn set_user_profile_fields(
 pub async fn list_user_phones(
     mut tc: TenantConn,
     params: web::Path<Uuid>,
-    _auth: AuthContext,
+    auth: AuthContext,
 ) -> impl Responder {
     let user_uuid = params.into_inner();
+    if let Some(denied) = guard_contact_access(&auth, &mut tc, user_uuid) {
+        return denied;
+    }
     match tc.run(|conn| repo::list_phones(conn, user_uuid)) {
         Ok(rows) => HttpResponse::Ok().json(rows),
         Err(e) => {
@@ -306,7 +317,7 @@ pub async fn add_user_phone(
     auth: AuthContext,
 ) -> impl Responder {
     let user_uuid = params.into_inner();
-    if let Some(resp) = guard_contact_edit(&auth, &mut tc, user_uuid) {
+    if let Some(resp) = guard_contact_access(&auth, &mut tc, user_uuid) {
         return resp;
     }
     let input = body.into_inner();
@@ -326,7 +337,7 @@ pub async fn update_user_phone(
     auth: AuthContext,
 ) -> impl Responder {
     let (user_uuid, id) = params.into_inner();
-    if let Some(resp) = guard_contact_edit(&auth, &mut tc, user_uuid) {
+    if let Some(resp) = guard_contact_access(&auth, &mut tc, user_uuid) {
         return resp;
     }
     let input = body.into_inner();
@@ -350,7 +361,7 @@ pub async fn delete_user_phone(
     auth: AuthContext,
 ) -> impl Responder {
     let (user_uuid, id) = params.into_inner();
-    if let Some(resp) = guard_contact_edit(&auth, &mut tc, user_uuid) {
+    if let Some(resp) = guard_contact_access(&auth, &mut tc, user_uuid) {
         return resp;
     }
     let result = tc.run(|conn| {
@@ -373,9 +384,12 @@ pub async fn delete_user_phone(
 pub async fn list_user_addresses(
     mut tc: TenantConn,
     params: web::Path<Uuid>,
-    _auth: AuthContext,
+    auth: AuthContext,
 ) -> impl Responder {
     let user_uuid = params.into_inner();
+    if let Some(denied) = guard_contact_access(&auth, &mut tc, user_uuid) {
+        return denied;
+    }
     match tc.run(|conn| repo::list_addresses(conn, user_uuid)) {
         Ok(rows) => HttpResponse::Ok().json(rows),
         Err(e) => {
@@ -392,7 +406,7 @@ pub async fn add_user_address(
     auth: AuthContext,
 ) -> impl Responder {
     let user_uuid = params.into_inner();
-    if let Some(resp) = guard_contact_edit(&auth, &mut tc, user_uuid) {
+    if let Some(resp) = guard_contact_access(&auth, &mut tc, user_uuid) {
         return resp;
     }
     let input = body.into_inner();
@@ -412,7 +426,7 @@ pub async fn update_user_address(
     auth: AuthContext,
 ) -> impl Responder {
     let (user_uuid, id) = params.into_inner();
-    if let Some(resp) = guard_contact_edit(&auth, &mut tc, user_uuid) {
+    if let Some(resp) = guard_contact_access(&auth, &mut tc, user_uuid) {
         return resp;
     }
     let input = body.into_inner();
@@ -436,7 +450,7 @@ pub async fn delete_user_address(
     auth: AuthContext,
 ) -> impl Responder {
     let (user_uuid, id) = params.into_inner();
-    if let Some(resp) = guard_contact_edit(&auth, &mut tc, user_uuid) {
+    if let Some(resp) = guard_contact_access(&auth, &mut tc, user_uuid) {
         return resp;
     }
     let result = tc.run(|conn| {
