@@ -20,6 +20,7 @@ pub mod channels;
 pub mod comments;
 pub mod cycles;
 pub mod dashboard_stats;
+pub mod directory;
 pub mod documentation;
 pub mod documentation_collections;
 pub mod documentation_page_tickets;
