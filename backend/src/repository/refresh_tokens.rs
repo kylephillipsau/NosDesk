@@ -99,6 +99,7 @@ mod tests {
             expires_at: (Utc::now() + Duration::hours(1)).naive_utc(),
             session_id: None,
             family_id: family,
+            audience: crate::models::REFRESH_AUDIENCE_AGENT.to_string(),
         };
 
         let created = create_refresh_token(&mut conn, new_token).unwrap();
@@ -121,6 +122,7 @@ mod tests {
             expires_at: (Utc::now() + Duration::hours(1)).naive_utc(),
             session_id: None,
             family_id: Uuid::new_v4(),
+            audience: crate::models::REFRESH_AUDIENCE_AGENT.to_string(),
         };
 
         create_refresh_token(&mut conn, new_token).unwrap();
@@ -142,6 +144,7 @@ mod tests {
             expires_at: (Utc::now() + Duration::hours(1)).naive_utc(),
             session_id: None,
             family_id: Uuid::new_v4(),
+            audience: crate::models::REFRESH_AUDIENCE_AGENT.to_string(),
         };
 
         create_refresh_token(&mut conn, new_token).unwrap();
@@ -167,6 +170,7 @@ mod tests {
                 expires_at: (Utc::now() + Duration::hours(1)).naive_utc(),
                 session_id: None,
                 family_id: family,
+                audience: crate::models::REFRESH_AUDIENCE_AGENT.to_string(),
             };
             create_refresh_token(&mut conn, new_token).unwrap();
         }

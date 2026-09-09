@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the check_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-permission",
+          "markdownDescription": "Enables the check_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-permission",
+          "markdownDescription": "Denies the check_permission command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_pending_notification command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-pending-notification",
@@ -319,6 +331,18 @@
           "markdownDescription": "Denies the get_token command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-settings",
+          "markdownDescription": "Enables the open_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-settings",
+          "markdownDescription": "Denies the open_settings command without any pre-configured scope."
+        },
+        {
           "description": "Enables the request_permission command without any pre-configured scope.",
           "type": "string",
           "const": "allow-request-permission",
@@ -331,10 +355,10 @@
           "markdownDescription": "Denies the request_permission command without any pre-configured scope."
         },
         {
-          "description": "Allows the app to request notification permission, read the push device token, and read a tapped notification\n#### This default permission set includes:\n\n- `allow-request-permission`\n- `allow-get-token`\n- `allow-get-pending-notification`",
+          "description": "Allows the app to check and request notification permission, open the OS notification settings, read the push device token, and read a tapped notification\n#### This default permission set includes:\n\n- `allow-request-permission`\n- `allow-check-permission`\n- `allow-open-settings`\n- `allow-get-token`\n- `allow-get-pending-notification`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows the app to request notification permission, read the push device token, and read a tapped notification\n#### This default permission set includes:\n\n- `allow-request-permission`\n- `allow-get-token`\n- `allow-get-pending-notification`"
+          "markdownDescription": "Allows the app to check and request notification permission, open the OS notification settings, read the push device token, and read a tapped notification\n#### This default permission set includes:\n\n- `allow-request-permission`\n- `allow-check-permission`\n- `allow-open-settings`\n- `allow-get-token`\n- `allow-get-pending-notification`"
         }
       ]
     }

@@ -30,28 +30,31 @@ function detectPlatform(): PushPlatform | null {
 /**
  * Request permission, obtain the device token, and register it with the
  * backend. Idempotent server-side, so it's safe to call on every login /
- * app-resume. No-op (resolves) when not on a supported platform or when
- * permission is denied / no token is available yet.
+ * app-resume.
+ *
+ * Returns whether a device is now registered. Callers that show the user a
+ * result must use it: permission can be granted while the POST fails, and
+ * reporting success then would promise notifications that cannot arrive.
  */
-export async function registerForPush(): Promise<void> {
+export async function registerForPush(): Promise<boolean> {
   const platform = detectPlatform()
   if (!platform) {
     console.info('[push] not a mobile platform — skipping')
-    return
+    return false
   }
 
   try {
     console.info(`[push] requesting notification permission (${platform})`)
     const permission = await invoke<{ granted: boolean }>('plugin:push|request_permission')
     console.info('[push] permission:', permission?.granted)
-    if (!permission?.granted) return
+    if (!permission?.granted) return false
 
     const result = await invoke<{ token: string | null }>('plugin:push|get_token')
     const token = result?.token
     console.info('[push] token obtained:', token ? `yes (len ${token.length})` : 'no')
     if (!token) {
       console.warn('[push] no device token — APNs registration/swizzle did not deliver one')
-      return
+      return false
     }
 
     let appVersion: string | undefined
@@ -64,8 +67,49 @@ export async function registerForPush(): Promise<void> {
     await registerPushDevice(platform, token, appVersion)
     lastRegisteredToken = token
     console.info('[push] device registered with backend')
+    return true
   } catch (e) {
     console.error('[push] registration failed:', e)
+    return false
+  }
+}
+
+/** Notification permission as the OS currently sees it. */
+export type PushPermission = 'granted' | 'denied' | 'prompt' | 'unsupported'
+
+/**
+ * Read permission WITHOUT prompting.
+ *
+ * The settings screen renders from this, so it must not have the side effect of
+ * showing the OS dialog: an Android 13+ prompt would fire on every visit, and on
+ * iOS a prompt after a denial resolves false silently and burns the one chance
+ * the OS gives.
+ */
+export async function checkPushPermission(): Promise<PushPermission> {
+  if (!detectPlatform()) return 'unsupported'
+  try {
+    const res = await invoke<{ status: string }>('plugin:push|check_permission')
+    const status = res?.status
+    return status === 'granted' || status === 'denied' || status === 'prompt'
+      ? status
+      : 'unsupported'
+  } catch (e) {
+    console.warn('[push] could not read permission:', e)
+    return 'unsupported'
+  }
+}
+
+/**
+ * Open this app's OS notification settings.
+ *
+ * Once permission is denied neither platform will prompt again, so this is the
+ * only route back to granting it.
+ */
+export async function openPushSettings(): Promise<void> {
+  try {
+    await invoke('plugin:push|open_settings')
+  } catch (e) {
+    console.warn('[push] could not open settings:', e)
   }
 }
 

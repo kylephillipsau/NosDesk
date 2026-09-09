@@ -9,6 +9,24 @@ pub struct PermissionResponse {
   pub granted: bool,
 }
 
+/// Result of `check_permission`: `granted`, `denied`, or `prompt` (never
+/// asked). Tri-state because the three need different UI: `prompt` offers to
+/// enable, `denied` can only send the user to OS settings (iOS will not
+/// re-prompt), and `granted` is done.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionStatusResponse {
+  pub status: String,
+}
+
+impl Default for PermissionStatusResponse {
+  fn default() -> Self {
+    Self {
+      status: "prompt".to_string(),
+    }
+  }
+}
+
 /// Result of `get_token`: the platform push token (APNs hex token on iOS, FCM
 /// registration token on Android), or `None` if unavailable (permission
 /// denied, registration still pending, or the provider isn't configured yet).

@@ -12,6 +12,12 @@ struct TokenResult: Encodable {
   let token: String?
 }
 
+/// Tri-state permission, so the settings UI can tell "never asked" (offer to
+/// enable) from "denied" (iOS cannot re-prompt, so send them to Settings).
+struct PermissionStatusResult: Encodable {
+  let status: String
+}
+
 /// A tapped notification, surfaced to JS for deep-linking. Mirrors the PII-free
 /// APNs payload built in `push_sender.rs` (generic type + entity refs). All
 /// `nil` = nothing pending. Keys are camelCase to match `PendingNotification`.
@@ -99,6 +105,36 @@ class PushPlugin: Plugin, UNUserNotificationCenterDelegate {
     PushPlugin.pendingOpened = NotificationOpened.from(
       userInfo: response.notification.request.content.userInfo)
     completionHandler()
+  }
+
+  /// Report permission WITHOUT prompting, so opening notification settings
+  /// never triggers the OS dialog as a side effect.
+  @objc public func checkPermission(_ invoke: Invoke) {
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      let status: String
+      switch settings.authorizationStatus {
+      case .notDetermined:
+        status = "prompt"
+      case .denied:
+        status = "denied"
+      default:
+        // authorized / provisional / ephemeral all deliver.
+        status = "granted"
+      }
+      invoke.resolve(PermissionStatusResult(status: status))
+    }
+  }
+
+  /// Open this app's iOS Settings page. Once a user has denied notifications,
+  /// `requestAuthorization` resolves false without showing anything, so this is
+  /// the only route back.
+  @objc public func openSettings(_ invoke: Invoke) {
+    DispatchQueue.main.async {
+      if let url = URL(string: UIApplication.openSettingsURLString) {
+        UIApplication.shared.open(url)
+      }
+      invoke.resolve()
+    }
   }
 
   /// Ask for notification permission; on grant, start APNs registration (the

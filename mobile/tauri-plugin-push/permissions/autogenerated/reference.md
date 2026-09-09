@@ -1,10 +1,12 @@
 ## Default Permission
 
-Allows the app to request notification permission, read the push device token, and read a tapped notification
+Allows the app to check and request notification permission, open the OS notification settings, read the push device token, and read a tapped notification
 
 #### This default permission set includes the following:
 
 - `allow-request-permission`
+- `allow-check-permission`
+- `allow-open-settings`
 - `allow-get-token`
 - `allow-get-pending-notification`
 
@@ -16,6 +18,32 @@ Allows the app to request notification permission, read the push device token, a
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`push:allow-check-permission`
+
+</td>
+<td>
+
+Enables the check_permission command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-check-permission`
+
+</td>
+<td>
+
+Denies the check_permission command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -65,6 +93,32 @@ Enables the get_token command without any pre-configured scope.
 <td>
 
 Denies the get_token command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:allow-open-settings`
+
+</td>
+<td>
+
+Enables the open_settings command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`push:deny-open-settings`
+
+</td>
+<td>
+
+Denies the open_settings command without any pre-configured scope.
 
 </td>
 </tr>

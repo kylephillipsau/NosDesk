@@ -202,3 +202,86 @@ fn portal_session_establishment_and_gate() {
         .expect_err("a consumed magic-link token cannot be reused");
     }
 }
+
+/// A portal refresh token must not be exchangeable for an agent session.
+///
+/// Portal sign-in mints a portal-scoped ACCESS token but a generic refresh
+/// token, stored in the same `refresh_tokens` table the agent app uses. Before
+/// the `audience` column existed the two were byte-identical, so
+/// `POST /api/auth/refresh` would look a portal token up by hash and mint a
+/// full staff session. The refresh cookie is Path-scoped to the portal endpoint,
+/// but that handler also reads the token from the request body, so a customer
+/// could copy their own cookie out of devtools and escalate.
+///
+/// This pins the property the handler's equality check depends on: what portal
+/// sign-in writes is not what the agent endpoint accepts.
+#[test]
+fn portal_refresh_tokens_are_not_agent_credentials() {
+    use backend::models::{REFRESH_AUDIENCE_AGENT, REFRESH_AUDIENCE_PORTAL};
+    use backend::schema::refresh_tokens;
+    use diesel::prelude::*;
+
+    common::ensure_test_keyring();
+    let test_db = common::TestDb::new();
+    let pool = test_db.pool_with_size(2);
+
+    let (workspace_id, customer) = {
+        let mut conn = pool.get().expect("conn");
+        let ws = common::mint_workspace(&mut conn, "acme-realm", "Acme Realm");
+        let customer = common::insert_user(&mut conn, "Realm Customer");
+        (ws, customer)
+    };
+    {
+        let mut conn = pool.get().expect("conn");
+        let actor = ActorContext::user(customer.uuid, None).with_workspace(workspace_id);
+        with_actor_context::<_, diesel::result::Error>(&mut conn, &actor, |c| {
+            add_membership(
+                c,
+                workspace_id,
+                customer.uuid,
+                "member",
+                SeatWriteAuthority::ControlPlane,
+            )?;
+            Ok(())
+        })
+        .expect("add membership");
+    }
+
+    let workspace_uuid = {
+        let mut conn = pool.get().expect("conn");
+        context_of(&mut conn, workspace_id).workspace_uuid
+    };
+
+    {
+        let mut conn = pool.get().expect("conn");
+        let http_req = TestRequest::default().to_http_request();
+        establish_portal_session(&customer, workspace_uuid, &http_req, &mut conn)
+            .expect("establishing a portal session succeeds");
+    }
+
+    let stored: Vec<String> = {
+        let mut conn = pool.get().expect("conn");
+        refresh_tokens::table
+            .filter(refresh_tokens::user_uuid.eq(customer.uuid))
+            .select(refresh_tokens::audience)
+            .load(&mut conn)
+            .expect("load refresh tokens")
+    };
+
+    assert!(
+        !stored.is_empty(),
+        "portal sign-in should store a refresh token"
+    );
+    for audience in &stored {
+        assert_eq!(
+            audience, REFRESH_AUDIENCE_PORTAL,
+            "portal sign-in must mark its refresh token as portal-realm"
+        );
+        // The agent refresh endpoint accepts only an exact match on the agent
+        // realm, so this inequality is what stops the exchange.
+        assert_ne!(
+            audience, REFRESH_AUDIENCE_AGENT,
+            "a portal token must never satisfy the agent endpoint's realm check"
+        );
+    }
+}

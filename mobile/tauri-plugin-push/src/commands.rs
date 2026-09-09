@@ -12,6 +12,18 @@ pub(crate) async fn request_permission<R: Runtime>(
 }
 
 #[command]
+pub(crate) async fn check_permission<R: Runtime>(
+  app: AppHandle<R>,
+) -> Result<PermissionStatusResponse> {
+  app.push().check_permission()
+}
+
+#[command]
+pub(crate) async fn open_settings<R: Runtime>(app: AppHandle<R>) -> Result<()> {
+  app.push().open_settings()
+}
+
+#[command]
 pub(crate) async fn get_token<R: Runtime>(app: AppHandle<R>) -> Result<TokenResponse> {
   app.push().get_token()
 }

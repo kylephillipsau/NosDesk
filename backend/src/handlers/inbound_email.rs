@@ -50,6 +50,33 @@ fn inbound_domain() -> String {
     std::env::var("NOSDESK_INBOUND_DOMAIN").unwrap_or_default()
 }
 
+/// SNS topics permitted to deliver inbound mail here, from
+/// `NOSDESK_INBOUND_SNS_TOPIC_ARN` (comma-separated).
+///
+/// A valid SNS signature proves only that AWS sent the message, not that WE
+/// asked for it: any AWS account can create a topic and point it at this
+/// endpoint. Without this check the signature verifies, the subscription
+/// auto-confirms, and an attacker's topic becomes a delivery channel for
+/// inbound mail.
+///
+/// Unset means refuse everything. Failing closed costs a missed delivery that
+/// the sender sees bounce; failing open costs an attacker-controlled mail feed.
+fn allowed_topic_arns() -> Vec<String> {
+    std::env::var("NOSDESK_INBOUND_SNS_TOPIC_ARN")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether `topic_arn` is one we accept. Exact match: an ARN is an identifier,
+/// not a pattern, and a prefix match would admit a topic whose name merely
+/// starts with ours.
+fn topic_is_allowed(topic_arn: &str) -> bool {
+    allowed_topic_arns().iter().any(|t| t == topic_arn)
+}
+
 /// `POST /api/inbound/email` — the SNS subscription target. Unauthenticated;
 /// the SNS signature is the authentication (see [`sns`]).
 pub async fn receive(
@@ -71,6 +98,17 @@ pub async fn receive(
 
     if let Err(e) = sns::verify_message(&HTTP, &message).await {
         warn!(error = %e, "inbound: SNS signature verification failed");
+        return HttpResponse::Forbidden().finish();
+    }
+
+    // Signature proves AWS sent it; this proves we asked for it. Checked before
+    // BOTH branches below, so an unrecognised topic can neither deliver mail nor
+    // confirm a subscription.
+    if !topic_is_allowed(&message.topic_arn) {
+        warn!(
+            topic = %message.topic_arn,
+            "inbound: rejecting SNS message from an unconfigured topic"
+        );
         return HttpResponse::Forbidden().finish();
     }
 
@@ -382,5 +420,50 @@ async fn confirm_subscription(message: &sns::SnsMessage) -> HttpResponse {
             error!(error = %e, "inbound: SNS subscription confirmation fetch failed");
             HttpResponse::ServiceUnavailable().finish()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The topic allowlist is the difference between "AWS sent this" and "we
+    /// asked for this". A valid SNS signature proves only the former, so any
+    /// AWS account could otherwise point its own topic at this endpoint and
+    /// have the subscription auto-confirm.
+    ///
+    /// These assert the pure predicate rather than the handler, because the env
+    /// var is process-global and parallel tests would race on it.
+    #[test]
+    fn topic_allowlist_matches_exactly_and_defaults_to_refusing() {
+        let ours = "arn:aws:sns:ap-southeast-2:123456789012:nosdesk-inbound";
+
+        // Unset (the empty list) refuses everything, including a plausible ARN.
+        assert!(
+            !["", "  ", " , "]
+                .iter()
+                .any(|raw| parse_allowed(raw).iter().any(|t| t == ours)),
+            "an unset allowlist must not admit any topic"
+        );
+
+        let allowed = parse_allowed(&format!("  {ours} , arn:aws:sns:us-east-1:1:other  "));
+        assert_eq!(allowed.len(), 2, "entries are split and trimmed");
+        assert!(allowed.iter().any(|t| t == ours));
+
+        // Exact match only: an ARN is an identifier, not a prefix. A topic whose
+        // name merely starts with ours is a different topic, possibly someone
+        // else's.
+        assert!(
+            !allowed.iter().any(|t| t == &format!("{ours}-evil")),
+            "a longer ARN sharing our prefix must not be admitted"
+        );
+    }
+
+    /// Mirrors `allowed_topic_arns` without reading the environment.
+    fn parse_allowed(raw: &str) -> Vec<String> {
+        raw.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     }
 }

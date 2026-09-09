@@ -22,6 +22,14 @@ impl<R: Runtime> Push<R> {
     Ok(PermissionResponse::default())
   }
 
+  pub fn check_permission(&self) -> crate::Result<PermissionStatusResponse> {
+    Ok(PermissionStatusResponse::default())
+  }
+
+  pub fn open_settings(&self) -> crate::Result<()> {
+    Ok(())
+  }
+
   pub fn get_token(&self) -> crate::Result<TokenResponse> {
     Ok(TokenResponse::default())
   }

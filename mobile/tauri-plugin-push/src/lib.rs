@@ -3,6 +3,10 @@
 //! Thin plugin exposing two commands to the JS layer:
 //! - `request_permission` — prompt for notification permission (and, on iOS,
 //!   start APNs registration),
+//! - `check_permission` — report permission (granted/denied/prompt) WITHOUT
+//!   prompting, so a settings screen can render state without side effects.
+//! - `open_settings` — open the OS notification settings for this app, the only
+//!   route back once a user has denied.
 //! - `get_token` — return the platform push token (APNs hex on iOS, FCM token
 //!   on Android) once available.
 //!
@@ -51,6 +55,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
   Builder::new("push")
     .invoke_handler(tauri::generate_handler![
       commands::request_permission,
+      commands::check_permission,
+      commands::open_settings,
       commands::get_token,
       commands::get_pending_notification
     ])

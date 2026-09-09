@@ -29,13 +29,29 @@ use crate::models::{
 use super::types::{NotificationChannel, NotificationFrequency, NotificationTypeCode};
 
 /// The channels the resolver considers (and the settings matrix exposes). Push
-/// defaults to `off` — it's opt-in after the user registers a device + grants
-/// OS permission — so it's never in a type's `default_channels`.
+/// is never in a type's `default_channels`: it defaults to `off` until the user
+/// has a registered device, and then to [`PUSH_DEFAULT_TYPES`] below.
 const RESOLVED_CHANNELS: [NotificationChannel; 3] = [
     NotificationChannel::InApp,
     NotificationChannel::Email,
     NotificationChannel::Push,
 ];
+
+/// Notification types push delivers by default, once the user has an active
+/// device.
+///
+/// Both are addressed to one person by name: an assignment makes a ticket
+/// yours, a mention asks for you specifically. Comment activity is deliberately
+/// absent even though it interrupts in-app: on a busy ticket it is the noisiest
+/// thing a helpdesk produces, and a phone buzzing for every reply is how users
+/// learn to disable push entirely. So this is its own list rather than the
+/// type's `interrupts` flag, which also covers comments, SLA breaches and
+/// overdue loans.
+///
+/// This is a DEFAULT, not a stored preference. It applies only where the user
+/// has no row for (type, push), so an explicit choice, in either direction,
+/// always wins and the settings UI can tell the two apart.
+const PUSH_DEFAULT_TYPES: &[&str] = &["ticket_assigned", "mentioned"];
 
 /// Manages notification preferences + workspace defaults with caching.
 pub struct PreferenceService {
@@ -203,8 +219,8 @@ impl PreferenceService {
         // user's prefs. So read under bypass; the per-workspace
         // workspace_notification_defaults is scoped by the explicit workspace_id
         // filter in the query below.
-        let (default_channels, type_interrupts, ws_defaults, user_prefs) =
-            // cross-tenant: notification_preferences is global per user (unique key excludes workspace_id); wnd is filtered by workspace_id in the query.
+        let (default_channels, type_interrupts, ws_defaults, user_prefs, has_push_device) =
+            // cross-tenant: notification_preferences and user_push_devices are global per user (their keys exclude workspace_id); wnd is filtered by workspace_id in the query.
             crate::sync::session::background_run(
                 &self.pool,
                 "background:notification_pref_load",
@@ -229,11 +245,18 @@ impl PreferenceService {
                         .select((np::channel, np::enabled, np::frequency))
                         .load(conn)
                         .unwrap_or_default();
+                    // Push's default depends on whether there is anything to
+                    // send to. Devices span the user's workspaces, hence the
+                    // same bypass the rest of this closure runs under.
+                    let has_push_device =
+                        crate::repository::push_devices::has_active_device(conn, *user_uuid_val)
+                            .unwrap_or(false);
                     Ok::<_, diesel::result::Error>((
                         default_channels,
                         type_interrupts,
                         ws_defaults,
                         user_prefs,
+                        has_push_device,
                     ))
                 },
             )
@@ -248,7 +271,9 @@ impl PreferenceService {
             .filter_map(|ch| {
                 let freq = Self::resolve_channel(
                     &ch,
+                    type_code,
                     type_interrupts,
+                    has_push_device,
                     &system_defaults,
                     &ws_map,
                     &user_map,
@@ -273,7 +298,9 @@ impl PreferenceService {
     /// Effective `(frequency, locked)` for one channel across the inheritance.
     fn resolve_channel(
         channel: &NotificationChannel,
+        type_code: &str,
         type_interrupts: bool,
+        has_push_device: bool,
         system_defaults: &[NotificationChannel],
         ws_map: &HashMap<String, (NotificationFrequency, bool)>,
         user_map: &HashMap<String, NotificationFrequency>,
@@ -283,10 +310,22 @@ impl PreferenceService {
         // channel defaults to `instant`, EXCEPT in-app on an informational
         // (non-interrupting) type, which defaults to `quiet` (bell only). A
         // channel not in the default list is `off`.
+        //
+        // Push is never in `default_channels`, so it resolves here: off with no
+        // registered device (nothing to send to, and the settings matrix should
+        // not offer a channel that cannot deliver), and `instant` on the
+        // [`PUSH_DEFAULT_TYPES`] once a device exists. A workspace default still
+        // takes precedence, and a user row still overrides both.
         let (base, locked) = match ws_map.get(key) {
             Some((freq, locked)) => (*freq, *locked),
             None => {
-                let f = if system_defaults.contains(channel) {
+                let f = if *channel == NotificationChannel::Push {
+                    if has_push_device && PUSH_DEFAULT_TYPES.contains(&type_code) {
+                        NotificationFrequency::Instant
+                    } else {
+                        NotificationFrequency::Off
+                    }
+                } else if system_defaults.contains(channel) {
                     if channel.supports_quiet() && !type_interrupts {
                         NotificationFrequency::Quiet
                     } else {
@@ -336,6 +375,16 @@ impl PreferenceService {
 
     async fn clear_cache(&self) {
         self.cache.write().await.clear();
+    }
+
+    /// Drop cached resolutions after a device registers or is revoked.
+    ///
+    /// Push's default depends on whether the user has a live device, so a
+    /// resolution cached before registration would keep reporting `off` and the
+    /// first push after enabling notifications would never fire. Clears the
+    /// whole cache, matching the other writers.
+    pub async fn invalidate_for_device_change(&self) {
+        self.clear_cache().await;
     }
 
     /// Update a user preference cell. Dual-writes the new `frequency` and the
@@ -462,40 +511,50 @@ impl PreferenceService {
             workspace_notification_defaults as wnd,
         };
 
-        // cross-tenant: resolves the user's primary workspace (only the user is known at this call).
-        let (types, ws_defaults, user_prefs) = crate::sync::session::background_run(
-            &self.pool,
-            "background:notification_pref_get_all",
-            |conn| {
-                let workspace_id_val = crate::repository::workspaces::primary_workspace_for_user(
-                    conn,
-                    *user_uuid_val,
-                )?;
-                let types: Vec<NotificationTypeModel> = nt::table.order(nt::id).load(conn)?;
-                let ws_defaults: Vec<(i32, String, String, bool)> = wnd::table
-                    .filter(wnd::workspace_id.eq(workspace_id_val))
-                    .select((
-                        wnd::notification_type_id,
-                        wnd::channel,
-                        wnd::frequency,
-                        wnd::locked,
+        let (types, ws_defaults, user_prefs, has_push_device) =
+            // cross-tenant: resolves the user's primary workspace (only the user is known at this call); user_push_devices is global per user.
+            crate::sync::session::background_run(
+                &self.pool,
+                "background:notification_pref_get_all",
+                |conn| {
+                    let workspace_id_val =
+                        crate::repository::workspaces::primary_workspace_for_user(
+                            conn,
+                            *user_uuid_val,
+                        )?;
+                    let types: Vec<NotificationTypeModel> = nt::table.order(nt::id).load(conn)?;
+                    let ws_defaults: Vec<(i32, String, String, bool)> = wnd::table
+                        .filter(wnd::workspace_id.eq(workspace_id_val))
+                        .select((
+                            wnd::notification_type_id,
+                            wnd::channel,
+                            wnd::frequency,
+                            wnd::locked,
+                        ))
+                        .load(conn)
+                        .unwrap_or_default();
+                    let user_prefs: Vec<(i32, String, bool, Option<String>)> = np::table
+                        .filter(np::user_uuid.eq(user_uuid_val))
+                        .select((
+                            np::notification_type_id,
+                            np::channel,
+                            np::enabled,
+                            np::frequency,
+                        ))
+                        .load(conn)
+                        .unwrap_or_default();
+                    let has_push_device =
+                        crate::repository::push_devices::has_active_device(conn, *user_uuid_val)
+                            .unwrap_or(false);
+                    Ok::<_, diesel::result::Error>((
+                        types,
+                        ws_defaults,
+                        user_prefs,
+                        has_push_device,
                     ))
-                    .load(conn)
-                    .unwrap_or_default();
-                let user_prefs: Vec<(i32, String, bool, Option<String>)> = np::table
-                    .filter(np::user_uuid.eq(user_uuid_val))
-                    .select((
-                        np::notification_type_id,
-                        np::channel,
-                        np::enabled,
-                        np::frequency,
-                    ))
-                    .load(conn)
-                    .unwrap_or_default();
-                Ok::<_, diesel::result::Error>((types, ws_defaults, user_prefs))
-            },
-        )
-        .map_err(|e| format!("Failed to load notification preferences: {e}"))?;
+                },
+            )
+            .map_err(|e| format!("Failed to load notification preferences: {e}"))?;
 
         let mut responses = Vec::new();
         for notif_type in types {
@@ -521,7 +580,9 @@ impl PreferenceService {
             for ch in RESOLVED_CHANNELS {
                 let (freq, is_locked) = Self::resolve_channel(
                     &ch,
+                    &notif_type.code,
                     notif_type.interrupts,
+                    has_push_device,
                     &system_defaults,
                     &ws_map,
                     &user_map,
@@ -695,6 +756,27 @@ mod tests {
         NotificationChannel::from_str(s).unwrap()
     }
 
+    /// The existing cases predate the push default, so they resolve a type that
+    /// is not in `PUSH_DEFAULT_TYPES` for a user with no device: the two inputs
+    /// that leave push's own rule inert.
+    fn resolve(
+        channel: &NotificationChannel,
+        interrupts: bool,
+        sys: &[NotificationChannel],
+        ws: &HashMap<String, (NotificationFrequency, bool)>,
+        user: &HashMap<String, NotificationFrequency>,
+    ) -> (NotificationFrequency, bool) {
+        PreferenceService::resolve_channel(
+            channel,
+            "ticket_status_changed",
+            interrupts,
+            false,
+            sys,
+            ws,
+            user,
+        )
+    }
+
     #[test]
     fn resolves_to_system_default_when_no_workspace_or_user() {
         // in_app is a system default (instant); email is not (off).
@@ -702,11 +784,11 @@ mod tests {
         let ws = HashMap::new();
         let user = HashMap::new();
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("in_app"), true, &sys, &ws, &user),
+            resolve(&ch("in_app"), true, &sys, &ws, &user),
             (NotificationFrequency::Instant, false)
         );
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("email"), true, &sys, &ws, &user),
+            resolve(&ch("email"), true, &sys, &ws, &user),
             (NotificationFrequency::Off, false)
         );
     }
@@ -718,7 +800,7 @@ mod tests {
         ws.insert("email".to_string(), (NotificationFrequency::Digest, false));
         let user = HashMap::new();
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("email"), true, &sys, &ws, &user),
+            resolve(&ch("email"), true, &sys, &ws, &user),
             (NotificationFrequency::Digest, false)
         );
     }
@@ -733,14 +815,14 @@ mod tests {
         // Unlocked workspace default → the user's override wins.
         ws.insert("email".to_string(), (NotificationFrequency::Instant, false));
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("email"), true, &sys, &ws, &user).0,
+            resolve(&ch("email"), true, &sys, &ws, &user).0,
             NotificationFrequency::Off
         );
 
         // Locked workspace default → the user cannot override it.
         ws.insert("email".to_string(), (NotificationFrequency::Instant, true));
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("email"), true, &sys, &ws, &user),
+            resolve(&ch("email"), true, &sys, &ws, &user),
             (NotificationFrequency::Instant, true)
         );
     }
@@ -755,21 +837,99 @@ mod tests {
         let user = HashMap::new();
 
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("in_app"), true, &sys, &ws, &user).0,
+            resolve(&ch("in_app"), true, &sys, &ws, &user).0,
             NotificationFrequency::Instant,
             "interrupting type → in-app instant"
         );
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("in_app"), false, &sys, &ws, &user).0,
+            resolve(&ch("in_app"), false, &sys, &ws, &user).0,
             NotificationFrequency::Quiet,
             "informational type → in-app quiet"
         );
         // Email has no quiet tier: it stays instant even for an informational
         // (non-interrupting) type.
         assert_eq!(
-            PreferenceService::resolve_channel(&ch("email"), false, &sys, &ws, &user).0,
+            resolve(&ch("email"), false, &sys, &ws, &user).0,
             NotificationFrequency::Instant,
             "email default is instant regardless of interrupt classification"
         );
+    }
+
+    /// Push's own rule, which is the whole point of the channel being absent
+    /// from every type's `default_channels`.
+    mod push_default {
+        use super::*;
+
+        fn push(
+            type_code: &str,
+            has_device: bool,
+            user: &HashMap<String, NotificationFrequency>,
+        ) -> NotificationFrequency {
+            PreferenceService::resolve_channel(
+                &ch("push"),
+                type_code,
+                true,
+                has_device,
+                // Push is never a system default; that is what puts its
+                // resolution in `resolve_channel` rather than the seed data.
+                &[NotificationChannel::InApp],
+                &HashMap::new(),
+                user,
+            )
+            .0
+        }
+
+        #[test]
+        fn off_without_a_device_even_on_a_default_type() {
+            // Nothing to send to, so the matrix must not offer the channel.
+            assert_eq!(
+                push("ticket_assigned", false, &HashMap::new()),
+                NotificationFrequency::Off
+            );
+        }
+
+        #[test]
+        fn on_for_the_default_types_once_a_device_exists() {
+            for code in ["ticket_assigned", "mentioned"] {
+                assert_eq!(
+                    push(code, true, &HashMap::new()),
+                    NotificationFrequency::Instant,
+                    "{code} should push by default"
+                );
+            }
+        }
+
+        /// Comment activity interrupts in-app but deliberately does not push:
+        /// a phone buzzing on every reply is how users learn to disable push.
+        /// Pins that the policy is its own list, not the `interrupts` flag.
+        #[test]
+        fn off_for_types_outside_the_policy_however_noisy() {
+            for code in ["comment_added", "sla_breached", "loan_overdue"] {
+                assert_eq!(
+                    push(code, true, &HashMap::new()),
+                    NotificationFrequency::Off,
+                    "{code} must not push by default"
+                );
+            }
+        }
+
+        /// The reason this is a default rather than seeded rows: an explicit
+        /// choice has to survive, in both directions.
+        #[test]
+        fn an_explicit_user_choice_wins_over_the_default() {
+            let off = HashMap::from([("push".to_string(), NotificationFrequency::Off)]);
+            assert_eq!(
+                push("ticket_assigned", true, &off),
+                NotificationFrequency::Off,
+                "opting out of a default type must stick"
+            );
+
+            let on = HashMap::from([("push".to_string(), NotificationFrequency::Instant)]);
+            assert_eq!(
+                push("comment_added", true, &on),
+                NotificationFrequency::Instant,
+                "opting in to a non-default type must stick"
+            );
+        }
     }
 }

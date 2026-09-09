@@ -154,6 +154,7 @@ pub struct RegisterDeviceRequest {
 pub async fn register_push_device(
     req: HttpRequest,
     pool: web::Data<Pool>,
+    notification_service: web::Data<NotificationService>,
     body: web::Json<RegisterDeviceRequest>,
 ) -> HttpResponse {
     let claims = match req.extensions().get::<Claims>() {
@@ -190,20 +191,18 @@ pub async fn register_push_device(
             token,
             body.app_version.as_deref(),
         )?;
-        // First device for this user gets sensible push preferences. Best
-        // effort by intent: a seeding failure must not fail the registration,
-        // since a registered device with no preferences still works once the
-        // user visits notification settings, whereas a failed registration
-        // leaves them with no push at all.
-        if let Err(e) =
-            crate::repository::push_devices::seed_push_defaults(conn, user_uuid, workspace_id)
-        {
-            tracing::warn!(error = %e, "could not seed default push preferences");
-        }
         Ok::<(), diesel::result::Error>(())
     });
     match res {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+        Ok(_) => {
+            // Push's default depends on having a device, so the cached
+            // resolution from before this call is now wrong.
+            notification_service
+                .preferences()
+                .invalidate_for_device_change()
+                .await;
+            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+        }
         Err(e) => {
             HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
@@ -214,6 +213,7 @@ pub async fn register_push_device(
 pub async fn unregister_push_device(
     req: HttpRequest,
     pool: web::Data<Pool>,
+    notification_service: web::Data<NotificationService>,
     path: web::Path<String>,
 ) -> HttpResponse {
     let claims = match req.extensions().get::<Claims>() {
@@ -239,7 +239,14 @@ pub async fn unregister_push_device(
         crate::repository::push_devices::revoke(conn, user_uuid, &token)
     });
     match res {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+        Ok(_) => {
+            // Revoking the last device flips push back to `off` by default.
+            notification_service
+                .preferences()
+                .invalidate_for_device_change()
+                .await;
+            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+        }
         Err(e) => {
             HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
