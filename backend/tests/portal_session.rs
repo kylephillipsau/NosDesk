@@ -285,3 +285,166 @@ fn portal_refresh_tokens_are_not_agent_credentials() {
         );
     }
 }
+
+/// Both refresh endpoints share one rotation core, so the realm check is
+/// symmetric: neither realm's token works at the other's endpoint.
+///
+/// The portal route exists now (its cookie was always `Path`-scoped to it), so
+/// portal sessions rotate instead of dying at the 15-minute access cookie. This
+/// asserts the property that makes adding that route safe: the audience stored
+/// at sign-in is the portal realm, and the agent endpoint accepts only its own.
+#[test]
+fn the_two_realms_mint_distinguishable_refresh_tokens() {
+    use backend::models::{REFRESH_AUDIENCE_AGENT, REFRESH_AUDIENCE_PORTAL};
+    use backend::schema::refresh_tokens;
+    use diesel::prelude::*;
+
+    common::ensure_test_keyring();
+    let test_db = common::TestDb::new();
+    let pool = test_db.pool_with_size(2);
+
+    let (workspace_id, customer) = {
+        let mut conn = pool.get().expect("conn");
+        let ws = common::mint_workspace(&mut conn, "acme-symmetry", "Acme Symmetry");
+        let customer = common::insert_user(&mut conn, "Symmetry Customer");
+        (ws, customer)
+    };
+    {
+        let mut conn = pool.get().expect("conn");
+        let actor = ActorContext::user(customer.uuid, None).with_workspace(workspace_id);
+        with_actor_context::<_, diesel::result::Error>(&mut conn, &actor, |c| {
+            add_membership(
+                c,
+                workspace_id,
+                customer.uuid,
+                "member",
+                SeatWriteAuthority::ControlPlane,
+            )?;
+            Ok(())
+        })
+        .expect("add membership");
+    }
+
+    let workspace_uuid = {
+        let mut conn = pool.get().expect("conn");
+        context_of(&mut conn, workspace_id).workspace_uuid
+    };
+    {
+        let mut conn = pool.get().expect("conn");
+        let http_req = TestRequest::default().to_http_request();
+        establish_portal_session(&customer, workspace_uuid, &http_req, &mut conn)
+            .expect("portal session");
+    }
+
+    let audiences: Vec<String> = {
+        let mut conn = pool.get().expect("conn");
+        refresh_tokens::table
+            .filter(refresh_tokens::user_uuid.eq(customer.uuid))
+            .select(refresh_tokens::audience)
+            .load(&mut conn)
+            .expect("load")
+    };
+
+    assert!(!audiences.is_empty());
+    assert!(
+        audiences.iter().all(|a| a == REFRESH_AUDIENCE_PORTAL),
+        "portal sign-in must mint portal-realm refresh tokens, got {audiences:?}"
+    );
+    assert!(
+        audiences.iter().all(|a| a != REFRESH_AUDIENCE_AGENT),
+        "and none of them may satisfy the agent endpoint"
+    );
+}
+
+/// A portal refresh cookie is a bearer credential. Replayed at another
+/// tenant's origin it must not mint a session there, and it must not be spent
+/// in the attempt: the refusal has to land before the family rotates, or a
+/// customer's own cookie could be burned by anyone who copies it.
+#[test]
+fn a_portal_refresh_cookie_is_refused_at_another_tenants_origin() {
+    use actix_web::cookie::Cookie;
+    use backend::handlers::portal::refresh_portal_session;
+    use backend::schema::refresh_tokens;
+    use backend::utils::cookies::PORTAL_REFRESH_TOKEN_COOKIE;
+    use diesel::prelude::*;
+
+    common::ensure_test_keyring();
+    let test_db = common::TestDb::new();
+    let pool = test_db.pool_with_size(2);
+
+    let (home, foreign, customer) = {
+        let mut conn = pool.get().expect("conn");
+        let home = common::mint_workspace(&mut conn, "acme-home", "Acme Home");
+        let foreign = common::mint_workspace(&mut conn, "acme-foreign", "Acme Foreign");
+        let customer = common::insert_user(&mut conn, "Replay Customer");
+        (home, foreign, customer)
+    };
+    {
+        let mut conn = pool.get().expect("conn");
+        let actor = ActorContext::user(customer.uuid, None).with_workspace(home);
+        with_actor_context::<_, diesel::result::Error>(&mut conn, &actor, |c| {
+            add_membership(
+                c,
+                home,
+                customer.uuid,
+                "member",
+                SeatWriteAuthority::ControlPlane,
+            )?;
+            Ok(())
+        })
+        .expect("add membership");
+    }
+
+    // Sign in at the home workspace and keep the refresh cookie it hands back.
+    let refresh_raw = {
+        let mut conn = pool.get().expect("conn");
+        let home_uuid = context_of(&mut conn, home).workspace_uuid;
+        let http_req = TestRequest::default().to_http_request();
+        let response = establish_portal_session(&customer, home_uuid, &http_req, &mut conn)
+            .expect("portal session");
+        response
+            .cookies()
+            .find(|c| c.name() == PORTAL_REFRESH_TOKEN_COOKIE)
+            .expect("refresh cookie")
+            .value()
+            .to_string()
+    };
+
+    // Present it at the foreign workspace's origin, where the customer is not
+    // a member.
+    let foreign_ctx = {
+        let mut conn = pool.get().expect("conn");
+        context_of(&mut conn, foreign)
+    };
+    let request = TestRequest::default()
+        .cookie(Cookie::new(
+            PORTAL_REFRESH_TOKEN_COOKIE,
+            refresh_raw.clone(),
+        ))
+        .to_http_request();
+    request.extensions_mut().insert(foreign_ctx);
+
+    let response = actix_web::rt::System::new().block_on(refresh_portal_session(
+        actix_web::web::Data::new(pool.clone()),
+        request,
+    ));
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "a non-member must not be handed a session for this workspace"
+    );
+
+    let spent: Vec<bool> = {
+        let mut conn = pool.get().expect("conn");
+        refresh_tokens::table
+            .filter(refresh_tokens::user_uuid.eq(customer.uuid))
+            .select(refresh_tokens::is_used)
+            .load(&mut conn)
+            .expect("load")
+    };
+    assert_eq!(spent.len(), 1, "the refusal must not have minted anything");
+    assert!(
+        !spent[0],
+        "and it must not have consumed the customer's own credential"
+    );
+}

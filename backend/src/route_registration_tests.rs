@@ -895,7 +895,11 @@ async fn guest_config_routes_registered() {
 async fn portal_auth_config_routes_registered() {
     assert_config_registers(
         crate::handlers::portal::auth_config,
-        &[("POST", "/magic-link"), ("GET", "/callback")],
+        &[
+            ("POST", "/magic-link"),
+            ("GET", "/callback"),
+            ("POST", "/refresh"),
+        ],
     )
     .await;
 }
