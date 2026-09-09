@@ -817,7 +817,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    email_suppressions (email) {
+    email_suppressions (workspace_id, email) {
         email -> Text,
         reason -> Text,
         bounce_diagnostic -> Nullable<Text>,
@@ -825,6 +825,7 @@ diesel::table! {
         created_at -> Timestamptz,
         last_seen_at -> Timestamptz,
         metadata -> Jsonb,
+        workspace_id -> Int4,
     }
 }
 
@@ -2348,6 +2349,7 @@ diesel::joinable!(documentation_starred_pages -> workspaces (workspace_id));
 diesel::joinable!(documentation_subscriptions -> documentation_pages (page_id));
 diesel::joinable!(documentation_subscriptions -> users (user_uuid));
 diesel::joinable!(documentation_subscriptions -> workspaces (workspace_id));
+diesel::joinable!(email_suppressions -> workspaces (workspace_id));
 diesel::joinable!(group_includes -> users (created_by));
 diesel::joinable!(group_includes -> workspaces (workspace_id));
 diesel::joinable!(groups -> users (created_by));

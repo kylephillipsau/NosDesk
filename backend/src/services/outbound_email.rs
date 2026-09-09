@@ -37,17 +37,26 @@ use crate::repository::workspaces;
 use crate::sync::session::{run_in_workspace, BackgroundRunError};
 use crate::utils::email::{DkimAlgorithm, DkimSigner, EmailConfig, EmailService, SmtpSecurity};
 
-/// True when `recipient` is on the (global) suppression list — a prior hard
+/// True when `recipient` is on `workspace_id`'s suppression list — a prior hard
 /// bounce or complaint. The queue worker checks this before every send; this is
 /// the same guard for the DIRECT (non-queued) send paths (auto-ack, technician
 /// replies), so none of them ships mail to a known-bad address and erodes the
-/// shared relay's reputation. Fails OPEN: a lookup error attempts the send
-/// rather than silently dropping it, matching the worker.
-pub fn recipient_is_suppressed(pool: &Pool, recipient: &str) -> bool {
-    // cross-tenant: email_suppressions is a global list (keyed by address, no workspace).
-    crate::sync::session::background_run(pool, "background:direct_send_suppress_check", |conn| {
-        crate::repository::email_suppressions::is_suppressed(conn, recipient)
-    })
+/// shared relay's reputation.
+///
+/// Fails OPEN: a lookup error attempts the send rather than silently dropping
+/// it, matching the worker. That is a deliberate choice for a *database error*,
+/// and it is the reason `workspace_id` is a parameter rather than something
+/// read from an ambient pin. The list carries FORCE row-level security, so an
+/// unpinned read returns zero rows, and zero rows here reads as "go ahead and
+/// send". Taking the workspace explicitly means the query filters on it
+/// directly and the answer does not depend on the caller having pinned.
+pub fn recipient_is_suppressed(pool: &Pool, workspace_id: i32, recipient: &str) -> bool {
+    crate::sync::session::run_in_workspace(
+        pool,
+        "direct_send_suppress_check",
+        workspace_id,
+        |conn| crate::repository::email_suppressions::is_suppressed(conn, workspace_id, recipient),
+    )
     .unwrap_or(false)
 }
 

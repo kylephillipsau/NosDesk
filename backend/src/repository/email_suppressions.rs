@@ -6,9 +6,19 @@
 //!
 //! All writes canonicalise the email to lower-case so that
 //! `Alice@Example.com` and `alice@example.com` hash to the same
-//! row. The table's primary key is the lower-cased address so
+//! row. The primary key is `(workspace_id, lower(email))`, so
 //! re-inserting bumps `bounce_count` and `last_seen_at` via
 //! `ON CONFLICT DO UPDATE` rather than failing.
+//!
+//! **Every function here takes a `workspace_id`, and none of them may be
+//! given one it inferred.** Suppression is a property of a relationship: it
+//! records that a particular workspace should stop writing to someone. The
+//! table also carries FORCE row-level security now, which makes an unpinned
+//! read return zero rows — and for `is_suppressed`, zero rows reads as "go
+//! ahead and send". Passing the workspace explicitly means the query filters
+//! on it directly and RLS is the backstop rather than the mechanism, so a
+//! caller that forgets to pin still gets the right answer instead of a
+//! silent green light.
 
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
@@ -33,7 +43,7 @@ pub fn upsert(
     };
     diesel::insert_into(email_suppressions::table)
         .values(&normalized)
-        .on_conflict(email_suppressions::email)
+        .on_conflict((email_suppressions::workspace_id, email_suppressions::email))
         .do_update()
         .set((
             email_suppressions::bounce_count.eq(email_suppressions::bounce_count + 1),
@@ -47,12 +57,18 @@ pub fn upsert(
 /// match via lower-case fold (mirrors `upsert`). The caller uses
 /// this on the outbound enqueue hot path, so it's a single keyed
 /// lookup rather than a list scan.
-pub fn is_suppressed(conn: &mut DbConnection, email: &str) -> Result<bool, diesel::result::Error> {
+pub fn is_suppressed(
+    conn: &mut DbConnection,
+    workspace_id: i32,
+    email: &str,
+) -> Result<bool, diesel::result::Error> {
     use diesel::dsl::exists;
     use diesel::select;
     let normalized = email.trim().to_ascii_lowercase();
     select(exists(
-        email_suppressions::table.filter(email_suppressions::email.eq(&normalized)),
+        email_suppressions::table
+            .filter(email_suppressions::workspace_id.eq(workspace_id))
+            .filter(email_suppressions::email.eq(&normalized)),
     ))
     .get_result(conn)
 }
@@ -60,10 +76,12 @@ pub fn is_suppressed(conn: &mut DbConnection, email: &str) -> Result<bool, diese
 /// Paginated list for the admin view, newest first.
 pub fn list(
     conn: &mut DbConnection,
+    workspace_id: i32,
     limit: i64,
     before: Option<DateTime<Utc>>,
 ) -> Result<Vec<EmailSuppression>, diesel::result::Error> {
     let mut q = email_suppressions::table
+        .filter(email_suppressions::workspace_id.eq(workspace_id))
         .order(email_suppressions::created_at.desc())
         .limit(limit)
         .into_boxed();
@@ -74,16 +92,27 @@ pub fn list(
 }
 
 /// Total count for the admin stats card.
-pub fn count(conn: &mut DbConnection) -> Result<i64, diesel::result::Error> {
-    email_suppressions::table.count().get_result(conn)
+pub fn count(conn: &mut DbConnection, workspace_id: i32) -> Result<i64, diesel::result::Error> {
+    email_suppressions::table
+        .filter(email_suppressions::workspace_id.eq(workspace_id))
+        .count()
+        .get_result(conn)
 }
 
 // sync-audit-only: suppression list mutation; operational table for email deliverability
 /// Remove a suppression. Returns the number of rows deleted so the
 /// admin handler can disambiguate "address not on the list" from
 /// "removed successfully" without a separate existence check.
-pub fn remove(conn: &mut DbConnection, email: &str) -> Result<usize, diesel::result::Error> {
+pub fn remove(
+    conn: &mut DbConnection,
+    workspace_id: i32,
+    email: &str,
+) -> Result<usize, diesel::result::Error> {
     let normalized = email.trim().to_ascii_lowercase();
-    diesel::delete(email_suppressions::table.filter(email_suppressions::email.eq(&normalized)))
-        .execute(conn)
+    diesel::delete(
+        email_suppressions::table
+            .filter(email_suppressions::workspace_id.eq(workspace_id))
+            .filter(email_suppressions::email.eq(&normalized)),
+    )
+    .execute(conn)
 }

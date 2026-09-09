@@ -516,7 +516,11 @@ impl ChannelAdapter for EmailImapAdapter {
         // Unlike the auto-ack path, a technician deliberately authored this, so
         // surface it as an error (they can clear the suppression in admin) rather
         // than silently dropping their reply.
-        if crate::services::outbound_email::recipient_is_suppressed(&self.pool, recipient) {
+        if crate::services::outbound_email::recipient_is_suppressed(
+            &self.pool,
+            self.workspace_id,
+            recipient,
+        ) {
             return Err(ChannelError::Other(format!(
                 "recipient {recipient} is on the suppression list (prior hard bounce or \
                  complaint); remove them from suppressions to send"

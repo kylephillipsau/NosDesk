@@ -7,7 +7,10 @@
 //!
 //! Workspace-admin-gated via `rbac::require_workspace_role`; no
 //! per-agent access (an agent seeing the suppression list could
-//! reveal email addresses they shouldn't know about).
+//! reveal email addresses they shouldn't know about). The same reasoning
+//! scopes the list per workspace: a peer tenant's admin knows those addresses
+//! less than an agent does, and deleting a peer's manual entry would resume
+//! mail to someone who asked them to stop.
 
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
@@ -72,13 +75,15 @@ pub async fn list(
     }
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let before = query.before;
-    // `email_suppressions` is a platform-global table (no
-    // `workspace_id`), so the RLS GUC TenantConn primes is a no-op
-    // for it. Wrapping it in `tc.run` still gives us the transaction
-    // boundary that pairs the list + count counters consistently.
+    let Some(workspace_id) = tc.workspace_id() else {
+        return errors::forbidden("A resolved workspace is required");
+    };
+    // Both queries filter on the workspace explicitly. The table now carries
+    // RLS too, but the filter is what makes the query correct on its face;
+    // RLS is the backstop for a caller that forgets to pin.
     let result: diesel::QueryResult<(Vec<EmailSuppression>, i64)> = tc.run(|conn| {
-        let rows = repo::list(conn, limit, before)?;
-        let total = repo::count(conn)?;
+        let rows = repo::list(conn, workspace_id, limit, before)?;
+        let total = repo::count(conn, workspace_id)?;
         Ok((rows, total))
     });
     let (rows, total) = match result {
@@ -123,10 +128,14 @@ pub async fn create(
     if email.is_empty() || !email.contains('@') {
         return errors::bad_request("Email must look like an address");
     }
+    let Some(workspace_id) = tc.workspace_id() else {
+        return errors::forbidden("A resolved workspace is required");
+    };
     let new = NewEmailSuppression {
         email,
         reason: email_suppression_reason::MANUAL.to_string(),
         bounce_diagnostic: body.note.clone(),
+        workspace_id,
     };
     match tc.run(|conn| repo::upsert(conn, new)) {
         Ok(row) => HttpResponse::Ok().json(RowResponse::from(row)),
@@ -146,7 +155,12 @@ pub async fn delete(
         return resp;
     }
     let email = path.into_inner();
-    match tc.run(|conn| repo::remove(conn, &email)) {
+    let Some(workspace_id) = tc.workspace_id() else {
+        return errors::forbidden("A resolved workspace is required");
+    };
+    // A peer tenant's entry is now indistinguishable from an address that was
+    // never on the list, which is the right shape: no cross-tenant oracle.
+    match tc.run(|conn| repo::remove(conn, workspace_id, &email)) {
         Ok(0) => errors::not_found_msg("Address is not on the suppression list"),
         Ok(_) => HttpResponse::NoContent().finish(),
         Err(e) => {
