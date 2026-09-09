@@ -2282,13 +2282,15 @@ pub async fn update_user_by_uuid(
                 }
                 let guard = tc.run(|conn| {
                     diesel::sql_query(
+                        // Removed admins must not prop up the count, or the
+                        // last real admin could be demoted behind their ghost.
                         "SELECT \
                            (SELECT COUNT(*) FROM workspace_members \
                               WHERE workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::int \
-                                AND role = 'admin') AS admin_count, \
+                                AND role = 'admin' AND removed_at IS NULL) AS admin_count, \
                            EXISTS(SELECT 1 FROM workspace_members \
                               WHERE workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::int \
-                                AND user_uuid = $1 AND role = 'admin') AS target_is_admin",
+                                AND user_uuid = $1 AND role = 'admin' AND removed_at IS NULL) AS target_is_admin",
                     )
                     .bind::<diesel::sql_types::Uuid, _>(user_uuid_parsed)
                     .get_result::<AdminGuard>(conn)

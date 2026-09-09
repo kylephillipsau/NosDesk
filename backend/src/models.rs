@@ -191,6 +191,11 @@ pub struct WorkspaceMember {
     pub role: String,
     pub invited_at: DateTime<Utc>,
     pub accepted_at: Option<DateTime<Utc>>,
+    /// When the membership was revoked; `None` means active. The row is kept
+    /// so historical actors still resolve to a name. Every role, permission
+    /// and seat-counting read must filter on this; only identity resolution
+    /// may ignore it.
+    pub removed_at: Option<DateTime<Utc>>,
 }
 
 /// invited the bug where a user could accidentally promote a view

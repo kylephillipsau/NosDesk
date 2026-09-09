@@ -98,7 +98,8 @@ pub async fn backfill_thumbnails(
     let rows: Vec<AvatarRow> = match diesel::sql_query(
         "SELECT u.uuid::text AS uuid_str, u.avatar_url, u.avatar_thumb, \
                 (SELECT wm.workspace_id FROM workspace_members wm \
-                 WHERE wm.user_uuid = u.uuid ORDER BY wm.workspace_id LIMIT 1) AS workspace_id \
+                 WHERE wm.user_uuid = u.uuid AND wm.removed_at IS NULL \
+                 ORDER BY wm.workspace_id LIMIT 1) AS workspace_id \
          FROM users u WHERE u.avatar_url IS NOT NULL",
     )
     .load(conn)

@@ -156,7 +156,8 @@ fn requester_sql(workspace_id: i32) -> String {
     format!(
         "(users.platform_role = 'user' \
          AND COALESCE((SELECT role FROM workspace_members \
-                       WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid), \
+                       WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid \
+                       AND removed_at IS NULL), \
                       'member') = 'member')"
     )
 }
@@ -228,7 +229,8 @@ pub fn get_paginated_users(
                     parts.push(format!(
                         "(users.platform_role = 'platform_admin' \
                          OR (SELECT role FROM workspace_members \
-                             WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid) \
+                             WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid \
+                       AND removed_at IS NULL) \
                             IN ('owner', 'admin'))"
                     ));
                     any = true;
@@ -237,7 +239,8 @@ pub fn get_paginated_users(
                     parts.push(format!(
                         "(users.platform_role <> 'platform_admin' \
                          AND (SELECT role FROM workspace_members \
-                              WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid) \
+                              WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid \
+                       AND removed_at IS NULL) \
                              = 'agent')"
                     ));
                     any = true;
@@ -246,7 +249,8 @@ pub fn get_paginated_users(
                     parts.push(format!(
                         "(users.platform_role <> 'platform_admin' \
                          AND COALESCE((SELECT role FROM workspace_members \
-                                       WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid), \
+                                       WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid \
+                       AND removed_at IS NULL), \
                                       'member') = 'member')"
                     ));
                     any = true;
@@ -282,10 +286,12 @@ pub fn get_paginated_users(
         "CASE \
         WHEN users.platform_role = 'platform_admin' THEN 0 \
         WHEN (SELECT role FROM workspace_members \
-              WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid) \
+              WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid \
+                       AND removed_at IS NULL) \
              IN ('owner', 'admin') THEN 1 \
         WHEN (SELECT role FROM workspace_members \
-              WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid) \
+              WHERE workspace_id = {workspace_id} AND user_uuid = users.uuid \
+                       AND removed_at IS NULL) \
              = 'agent' THEN 2 \
         ELSE 3 END"
     );
@@ -887,7 +893,8 @@ pub fn set_user_roles(
     diesel::update(
         workspace_members::table
             .filter(workspace_members::workspace_id.eq(workspace_id))
-            .filter(workspace_members::user_uuid.eq(user_uuid)),
+            .filter(workspace_members::user_uuid.eq(user_uuid))
+            .filter(workspace_members::removed_at.is_null()),
     )
     .set(workspace_members::role.eq(workspace_role))
     .execute(conn)?;

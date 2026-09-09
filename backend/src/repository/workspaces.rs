@@ -54,6 +54,7 @@ pub fn user_is_staff_anywhere(conn: &mut DbConnection, user_uuid: Uuid) -> Query
     let n: i64 = workspace_members::table
         .filter(workspace_members::user_uuid.eq(user_uuid))
         .filter(workspace_members::role.eq_any(STAFF_ROLES))
+        .filter(workspace_members::removed_at.is_null())
         .select(count_star())
         .get_result(conn)?;
     Ok(n > 0)
@@ -275,6 +276,7 @@ pub fn membership(
     workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .first(conn)
         .optional()
 }
@@ -324,10 +326,20 @@ pub fn add_membership(
     // which has a pending-invite step. The email-invite path creates
     // its membership via create_user_with_email and leaves accepted_at
     // NULL until accept_invitation stamps it.
+    //
+    // `DO NOTHING` was right when removal deleted the row: a conflict could
+    // only mean "already an active member". Under soft-remove the row survives,
+    // so a conflict is ambiguous and DO NOTHING would silently leave a removed
+    // person removed while reporting nothing added. Re-activate instead, and
+    // keep the old behaviour for the still-active case with the WHERE clause.
+    // The re-activation is an UPDATE, so it goes through the seat-limit
+    // trigger, which is why that trigger had to learn about `removed_at` too.
     let rows = diesel::sql_query(
         "INSERT INTO workspace_members (workspace_id, user_uuid, role, accepted_at) \
          VALUES ($1, $2, $3, now()) \
-         ON CONFLICT (workspace_id, user_uuid) DO NOTHING",
+         ON CONFLICT (workspace_id, user_uuid) DO UPDATE \
+           SET removed_at = NULL, role = EXCLUDED.role, accepted_at = now() \
+         WHERE workspace_members.removed_at IS NOT NULL",
     )
     .bind::<diesel::sql_types::Integer, _>(workspace_id)
     .bind::<diesel::sql_types::Uuid, _>(user_uuid)
@@ -417,6 +429,7 @@ pub fn count_staff_members(conn: &mut DbConnection, workspace_id: i32) -> QueryR
     workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
         .filter(workspace_members::role.eq_any(STAFF_ROLES))
+        .filter(workspace_members::removed_at.is_null())
         .count()
         .get_result(conn)
 }
@@ -504,6 +517,7 @@ pub fn set_notification_push_detail(
 pub fn primary_workspace_for_user(conn: &mut DbConnection, user_uuid: Uuid) -> QueryResult<i32> {
     workspace_members::table
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .order(workspace_members::workspace_id.asc())
         .select(workspace_members::workspace_id)
         .first::<i32>(conn)
@@ -685,6 +699,7 @@ pub fn list_memberships_for_user(
     workspace_members::table
         .inner_join(workspaces::table.on(workspaces::id.eq(workspace_members::workspace_id)))
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .filter(workspaces::archived_at.is_null())
         .order(workspaces::id.asc())
         .select((WorkspaceMember::as_select(), Workspace::as_select()))
@@ -723,6 +738,7 @@ pub fn list_workspace_members(
 ) -> QueryResult<Vec<WorkspaceMember>> {
     workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
+        .filter(workspace_members::removed_at.is_null())
         .order(workspace_members::user_uuid.asc())
         .load(conn)
 }
@@ -735,6 +751,7 @@ pub fn count_workspace_owners(conn: &mut DbConnection, workspace_id: i32) -> Que
     workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
         .filter(workspace_members::role.eq("owner"))
+        .filter(workspace_members::removed_at.is_null())
         .count()
         .get_result(conn)
 }
@@ -768,6 +785,7 @@ pub fn remove_membership(
     let existing = workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .first::<WorkspaceMember>(conn)
         .optional()?;
     let row = match existing {
@@ -786,11 +804,16 @@ pub fn remove_membership(
         }
     }
 
-    diesel::delete(
+    // Stamp rather than delete. The row is what lets a former member's name
+    // still render on the tickets, comments and audit entries they left behind;
+    // deleting it turned every one of those into an unknown user.
+    diesel::update(
         workspace_members::table
             .filter(workspace_members::workspace_id.eq(workspace_id))
-            .filter(workspace_members::user_uuid.eq(user_uuid)),
+            .filter(workspace_members::user_uuid.eq(user_uuid))
+            .filter(workspace_members::removed_at.is_null()),
     )
+    .set(workspace_members::removed_at.eq(chrono::Utc::now()))
     .execute(conn)?;
     Ok(RemoveMembershipOutcome::Removed)
 }
@@ -820,6 +843,7 @@ pub fn get_membership_role(
     workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .select(workspace_members::role)
         .first::<String>(conn)
         .optional()
@@ -834,7 +858,8 @@ pub fn mark_memberships_accepted(conn: &mut DbConnection, user_uuid: Uuid) -> Qu
     diesel::update(
         workspace_members::table
             .filter(workspace_members::user_uuid.eq(user_uuid))
-            .filter(workspace_members::accepted_at.is_null()),
+            .filter(workspace_members::accepted_at.is_null())
+            .filter(workspace_members::removed_at.is_null()),
     )
     .set(workspace_members::accepted_at.eq(chrono::Utc::now()))
     .execute(conn)
@@ -857,6 +882,7 @@ pub fn update_membership_role(
     let existing = workspace_members::table
         .filter(workspace_members::workspace_id.eq(workspace_id))
         .filter(workspace_members::user_uuid.eq(user_uuid))
+        .filter(workspace_members::removed_at.is_null())
         .first::<WorkspaceMember>(conn)
         .optional()?;
     let row = match existing {
@@ -880,7 +906,8 @@ pub fn update_membership_role(
     let updated = diesel::update(
         workspace_members::table
             .filter(workspace_members::workspace_id.eq(workspace_id))
-            .filter(workspace_members::user_uuid.eq(user_uuid)),
+            .filter(workspace_members::user_uuid.eq(user_uuid))
+            .filter(workspace_members::removed_at.is_null()),
     )
     .set(workspace_members::role.eq(new_role))
     .get_result::<WorkspaceMember>(conn)?;
@@ -1593,7 +1620,7 @@ mod tests {
         let ops: Vec<&str> = rows.iter().map(|r| r.op.as_str()).collect();
         assert_eq!(
             ops,
-            vec!["I", "U", "D"],
+            vec!["I", "U", "U"],
             "one audit row per mutation, in order"
         );
         for r in &rows {
@@ -1606,6 +1633,19 @@ mod tests {
             rows[1].changed.as_deref().unwrap_or("").contains("role"),
             "role-change row should list role in changed_cols: {:?}",
             rows[1].changed
+        );
+        // Removal is the third 'U', not a 'D': memberships are soft-removed so
+        // a former member's name still resolves on what they left behind. The
+        // audit trail is strictly better for it, since a delete destroyed the
+        // evidence that the person was ever a member.
+        assert!(
+            rows[2]
+                .changed
+                .as_deref()
+                .unwrap_or("")
+                .contains("removed_at"),
+            "removal row should list removed_at in changed_cols: {:?}",
+            rows[2].changed
         );
     }
 

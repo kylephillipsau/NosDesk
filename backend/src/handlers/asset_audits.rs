@@ -220,7 +220,8 @@ fn inventory_alert_recipients(conn: &mut crate::db::DbConnection) -> Vec<uuid::U
                         >(
                             "NULLIF(current_setting('app.workspace_id', true), '')::int",
                         )))
-                        .filter(workspace_members::role.eq_any(vec!["owner", "admin", "agent"])),
+                        .filter(workspace_members::role.eq_any(vec!["owner", "admin", "agent"]))
+                        .filter(workspace_members::removed_at.is_null()),
                 )),
         )
         .select(users::uuid)
