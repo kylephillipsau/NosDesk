@@ -425,8 +425,6 @@ async fn confirm_subscription(message: &sns::SnsMessage) -> HttpResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// The topic allowlist is the difference between "AWS sent this" and "we
     /// asked for this". A valid SNS signature proves only the former, so any
     /// AWS account could otherwise point its own topic at this endpoint and

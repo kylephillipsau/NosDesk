@@ -161,24 +161,24 @@ pub async fn patch_user_override(
     req: HttpRequest,
 ) -> impl Responder {
     let target_uuid_str = path.into_inner();
-    let target_uuid = match Uuid::parse_str(&target_uuid_str) {
-        Ok(u) => u,
-        Err(_) => return errors::bad_request("Invalid user UUID"),
-    };
 
-    let mut conn = match helpers::admin_conn(&req, &pool) {
-        Ok(c) => c,
+    // `admin_conn` proves the caller is an admin, but says nothing about WHOSE
+    // admin. `users` carries no RLS, and `set_user_override` writes by uuid, so
+    // that alone let an admin of one workspace set flags on a member of
+    // another. `admin_user_conn` is the established gate for "an admin acting on
+    // a target user": it adds the membership check, resolves the target, and is
+    // the same helper the MFA and passkey recovery routes already use.
+    let (claims, target, mut conn) = match helpers::admin_user_conn(&req, &pool, &target_uuid_str) {
+        Ok(v) => v,
         Err(e) => return e,
     };
+    let target_uuid = target.uuid;
 
     if body.flag.trim().is_empty() {
         return errors::bad_request("Flag name is required");
     }
 
-    let actor_uuid = req
-        .extensions()
-        .get::<Claims>()
-        .and_then(|c| Uuid::parse_str(&c.sub).ok());
+    let actor_uuid = Uuid::parse_str(&claims.sub).ok();
 
     match repo::set_user_override(&mut conn, &target_uuid, &body.flag, body.value.clone()) {
         Ok(overrides) => {
