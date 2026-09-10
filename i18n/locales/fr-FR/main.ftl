@@ -6048,6 +6048,12 @@ common-bulk-actions-aria = Actions groupées
 common-loading-more-aria = Chargement de la suite
 ptr-refreshing = Actualisation…
 ptr-updated = Mis à jour
+pagination-controls-per-page = par page
+pagination-controls-of-total = sur { $total }
+pagination-controls-items = { $count ->
+    [one] { $count } élément
+   *[other] { $count } éléments
+}
 pagination-controls-page = Page
 pagination-controls-show = Afficher
 asset-modal-title = Sélectionner un actif

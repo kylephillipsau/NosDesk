@@ -6213,6 +6213,12 @@ common-bulk-actions-aria = Bulk actions
 common-loading-more-aria = Loading more
 ptr-refreshing = Refreshing…
 ptr-updated = Updated
+pagination-controls-per-page = per page
+pagination-controls-of-total = of { $total }
+pagination-controls-items = { $count ->
+    [one] { $count } item
+   *[other] { $count } items
+}
 pagination-controls-page = Page
 pagination-controls-show = Show
 asset-modal-title = Select an asset

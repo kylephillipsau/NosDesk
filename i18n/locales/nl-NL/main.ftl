@@ -6039,6 +6039,12 @@ common-bulk-actions-aria = Bulkacties
 common-loading-more-aria = Meer laden
 ptr-refreshing = Vernieuwen…
 ptr-updated = Bijgewerkt
+pagination-controls-per-page = per pagina
+pagination-controls-of-total = van { $total }
+pagination-controls-items = { $count ->
+    [one] { $count } item
+   *[other] { $count } items
+}
 pagination-controls-page = Pagina
 pagination-controls-show = Toon
 asset-modal-title = Selecteer een activum
