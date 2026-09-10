@@ -1801,8 +1801,7 @@ diesel::table! {
         id -> Int4,
         user_uuid -> Uuid,
         provider_type -> Text,
-        #[max_length = 255]
-        external_id -> Varchar,
+        external_id -> Text,
         #[max_length = 320]
         email -> Nullable<Varchar>,
         metadata -> Nullable<Jsonb>,

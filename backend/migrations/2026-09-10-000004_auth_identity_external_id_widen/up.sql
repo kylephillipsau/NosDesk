@@ -1,0 +1,28 @@
+-- `user_auth_identities.external_id` holds the provider's opaque subject, and
+-- varchar(255) is a bound nothing about the value justifies.
+--
+-- Preventative, not a fix for a live failure: today's providers all fit.
+-- OIDC `sub` is short, Microsoft object ids are GUIDs, and LDAP uses
+-- entryUUID / objectGUID. SAML is the one that would not necessarily fit: an
+-- email-format NameID is bounded by email length, 320 characters, and
+-- persistent NameIDs carry no length bound at all.
+--
+-- It is widened now rather than when SAML lands because the failure mode is
+-- expensive and badly-timed. Postgres rejects an over-length varchar rather
+-- than truncating, the surrounding provisioning fails with it, and it surfaces
+-- as "SSO is broken" at a customer's very first federated login, with nothing
+-- in the error pointing at a column width. That exact shape cost real time
+-- twice today: the OIDC issuer overflowed `user_emails.source` and then
+-- `user_auth_identities.provider_type`, both varchar(50), both silent until a
+-- signup failed.
+--
+-- Truncation would be worse than the error regardless: `external_id` is half
+-- the identity key, so a clipped subject would store an identity that no
+-- later login could match.
+--
+-- TEXT rather than a larger varchar, for the same reason as the other two:
+-- there is no length this column wants to enforce, and picking another number
+-- just moves the cliff. Both partial unique indexes
+-- (`user_auth_identities_global_uq`, `user_auth_identities_scoped_uq`) survive
+-- the type change.
+ALTER TABLE user_auth_identities ALTER COLUMN external_id TYPE TEXT;
