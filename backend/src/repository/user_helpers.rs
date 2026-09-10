@@ -860,4 +860,94 @@ mod tests {
             _ => panic!("expected Existing on repeat submission"),
         }
     }
+
+    /// A long OIDC issuer must survive account creation.
+    ///
+    /// `source` records the issuer, because it is half the `(iss, sub)` key a
+    /// seat resolves on, and it was `varchar(50)` until
+    /// `2026-09-10-000002_user_emails_source_widen`. Postgres rejects an
+    /// over-length varchar rather than truncating it, so the insert failed,
+    /// `create_user_with_email` failed with it, and a first-time OIDC signup
+    /// never completed.
+    ///
+    /// Which providers this reached depended entirely on issuer length, which
+    /// is why it went unnoticed: a Keycloak realm at
+    /// `https://keycloak.example.com/realms/master` is 45 characters and fits,
+    /// while Microsoft Entra's
+    /// `https://login.microsoftonline.com/<tenant-guid>/v2.0` is 75 and does
+    /// not. The hosted platform issuer is short, and Microsoft logins arrive
+    /// through the `microsoft` provider path, which writes a literal string.
+    #[test]
+    fn a_long_oidc_issuer_survives_account_creation() {
+        let mut conn = setup_test_connection();
+
+        // The real shape, not an invented one: a tenant-scoped Entra issuer.
+        let entra_issuer =
+            "https://login.microsoftonline.com/72f988bf-86f1-41af-91ab-2d7cd011db47/v2.0";
+        assert!(
+            entra_issuer.len() > 50,
+            "the regression only exists above 50 characters; this issuer is {}",
+            entra_issuer.len()
+        );
+
+        let new_user = crate::models::NewUser {
+            uuid: Uuid::new_v4(),
+            name: "Long Issuer".into(),
+            pronouns: None,
+            avatar_url: None,
+            banner_url: None,
+            avatar_thumb: None,
+            microsoft_uuid: None,
+            mfa_secret: None,
+            mfa_secret_kek_id: None,
+            mfa_enabled: false,
+            platform_role: None,
+        };
+
+        let (_user, email_record) = create_user_with_email(
+            new_user,
+            WorkspaceRole::Member,
+            "long-issuer@test.com".into(),
+            true,
+            Some(entra_issuer.to_string()),
+            &mut conn,
+            None,
+            crate::repository::workspaces::SeatWriteAuthority::ControlPlane,
+        )
+        .and_then(|o| o.into_created())
+        .expect("a 75-character issuer must not fail account creation");
+
+        assert_eq!(
+            email_record.source.as_deref(),
+            Some(entra_issuer),
+            "the issuer must round-trip whole; a truncated one would not match \
+             the (iss, sub) key a later login resolves on"
+        );
+
+        // The issuer is stored TWICE, because a seat resolves on (iss, sub):
+        // as this address's `source`, and as the identity's `provider_type`.
+        // Widening only one of them left signup failing exactly as before, at
+        // the other INSERT, so both belong in one test.
+        use crate::schema::user_auth_identities;
+        let identity_rows: i64 = diesel::insert_into(user_auth_identities::table)
+            .values((
+                user_auth_identities::user_uuid.eq(_user.uuid),
+                user_auth_identities::provider_type.eq(entra_issuer),
+                user_auth_identities::external_id.eq("sub-abc123"),
+            ))
+            .execute(&mut conn)
+            .expect("a 75-character issuer must fit provider_type too")
+            as i64;
+        assert_eq!(identity_rows, 1);
+
+        let stored: String = user_auth_identities::table
+            .filter(user_auth_identities::user_uuid.eq(_user.uuid))
+            .select(user_auth_identities::provider_type)
+            .first(&mut conn)
+            .expect("identity row");
+        assert_eq!(
+            stored, entra_issuer,
+            "a clipped issuer would store an identity no later login could match"
+        );
+    }
 }
