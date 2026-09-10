@@ -949,5 +949,21 @@ mod tests {
             stored, entra_issuer,
             "a clipped issuer would store an identity no later login could match"
         );
+
+        // `external_id` is the other half of that key, and SAML is where it
+        // gets long: an email-format NameID is bounded only by email length,
+        // 320. Preventative rather than a live case, since every provider in
+        // use today is short, but it is the same failure and it would surface
+        // at a customer's first federated login.
+        let long_name_id = format!("{}@{}.example.com", "n".repeat(64), "d".repeat(240));
+        assert!(long_name_id.len() > 255);
+        diesel::insert_into(user_auth_identities::table)
+            .values((
+                user_auth_identities::user_uuid.eq(_user.uuid),
+                user_auth_identities::provider_type.eq("https://idp.example.com/saml/metadata"),
+                user_auth_identities::external_id.eq(&long_name_id),
+            ))
+            .execute(&mut conn)
+            .expect("a 300-character NameID must fit external_id");
     }
 }
