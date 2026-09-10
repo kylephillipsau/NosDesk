@@ -1800,8 +1800,7 @@ diesel::table! {
     user_auth_identities (id) {
         id -> Int4,
         user_uuid -> Uuid,
-        #[max_length = 50]
-        provider_type -> Varchar,
+        provider_type -> Text,
         #[max_length = 255]
         external_id -> Varchar,
         #[max_length = 320]

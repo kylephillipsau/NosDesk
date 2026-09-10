@@ -1,0 +1,27 @@
+-- `user_auth_identities.provider_type` holds the OIDC issuer, and varchar(50)
+-- is too narrow for real ones.
+--
+-- This is the second half of a fix whose first half
+-- (2026-09-10-000002_user_emails_source_widen) was incomplete. The issuer is
+-- stored in two places, because a seat resolves on `(iss, sub)`: as the
+-- identity's `provider_type` here, and as the address's `source` there.
+-- Widening only one left first-time OIDC signup failing exactly as before,
+-- just at a different INSERT, so the earlier migration fixed nothing on its
+-- own.
+--
+-- Same mechanics as before: `oauth_provisioning` writes `iss.to_string()`
+-- straight in, Postgres rejects an over-length varchar rather than truncating
+-- it, and the surrounding `create_user` fails with it. Microsoft Entra's
+-- issuer, `https://login.microsoftonline.com/<tenant-guid>/v2.0`, is 75
+-- characters. A Keycloak realm at `https://<host>/realms/master` is about 45
+-- and fits, which is why this depends entirely on who the provider is and how
+-- it went unnoticed.
+--
+-- Truncation would be worse than the error, incidentally: `provider_type` is
+-- half the lookup key, so a clipped issuer would store an identity that no
+-- subsequent login could ever match.
+--
+-- TEXT, not a larger varchar: there is no length this column wants to
+-- enforce, and another number just moves the cliff. Indexes on the column
+-- survive the type change.
+ALTER TABLE user_auth_identities ALTER COLUMN provider_type TYPE TEXT;
