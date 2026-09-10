@@ -2922,7 +2922,10 @@ pub struct NewUserEmail {
 #[diesel(table_name = crate::schema::user_emails)]
 pub struct UserEmailUpdate {
     pub is_primary: Option<bool>,
-    pub is_verified: Option<bool>,
+    /// No `is_verified`. Verification is a claim about the address, provable
+    /// only by a challenge sent to it, so there is no request whose body may
+    /// carry it. Removing the field means a future handler cannot reintroduce
+    /// the hole by passing one through; it has to add a writer deliberately.
     pub updated_at: Option<NaiveDateTime>,
 }
 
