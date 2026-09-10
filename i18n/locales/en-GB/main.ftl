@@ -1086,6 +1086,7 @@ admin-api-tokens-copied = Copied!
 admin-api-tokens-copy-title = Copy to clipboard
 admin-api-tokens-bearer-hint-prefix = Use this token with the
 admin-api-tokens-bearer-hint-suffix = header
+admin-api-tokens-workspace-bound = This token works only in { $workspace }. Create a separate token for another workspace.
 admin-api-tokens-done = Done
 admin-api-tokens-revoke-modal-title = Revoke Token
 admin-api-tokens-revoke-confirm-message = Are you sure you want to revoke the token "{ $name }"?

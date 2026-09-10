@@ -162,6 +162,23 @@ pub fn find_by_id(conn: &mut DbConnection, id: i32) -> QueryResult<Option<Worksp
         .optional()
 }
 
+/// The workspace uuid for an id, **regardless of archive state**.
+///
+/// `api_tokens.workspace_id` is an FK, so the row always exists, and the
+/// binding is a fact about the token even when the workspace is archived.
+/// [`find_by_id`] filters archived workspaces, which would turn an archived
+/// binding into a failed token lookup and a 401: that strands every token
+/// minted in a workspace the moment it is archived, including the platform
+/// admin's token needed to restore it. Refusing belongs at the membership
+/// gate, not at the credential check.
+pub fn uuid_for_id(conn: &mut DbConnection, id: i32) -> QueryResult<Option<Uuid>> {
+    workspaces::table
+        .filter(workspaces::id.eq(id))
+        .select(workspaces::uuid)
+        .first(conn)
+        .optional()
+}
+
 /// Load a workspace by its public uuid. Used by selection-based
 /// resolution (Model C): the agent app sends the chosen workspace
 /// uuid in the `X-Nosdesk-Workspace` header and the auth gate

@@ -1372,6 +1372,7 @@ admin-api-tokens-copied = Copié !
 admin-api-tokens-copy-title = Copier dans le presse-papiers
 admin-api-tokens-bearer-hint-prefix = Utilisez ce jeton avec l'en-tête
 admin-api-tokens-bearer-hint-suffix = .
+admin-api-tokens-workspace-bound = Ce jeton fonctionne uniquement dans { $workspace }. Créez un jeton distinct pour un autre espace de travail.
 admin-api-tokens-done = Terminé
 admin-api-tokens-revoke-modal-title = Révoquer le jeton
 admin-api-tokens-revoke-confirm-message = Confirmez-vous la révocation du jeton « { $name } » ?

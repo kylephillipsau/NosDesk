@@ -1369,6 +1369,7 @@ admin-api-tokens-copied = Gekopieerd!
 admin-api-tokens-copy-title = Naar klembord kopiëren
 admin-api-tokens-bearer-hint-prefix = Gebruik dit token met de
 admin-api-tokens-bearer-hint-suffix = header
+admin-api-tokens-workspace-bound = Dit token werkt alleen in { $workspace }. Maak een apart token voor een andere werkruimte.
 admin-api-tokens-done = Klaar
 admin-api-tokens-revoke-modal-title = Token intrekken
 admin-api-tokens-revoke-confirm-message = Weet u zeker dat u het token "{ $name }" wilt intrekken?

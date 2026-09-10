@@ -15,8 +15,10 @@ import Modal from '@/components/Modal.vue';
 import apiTokenService from '@nosdesk/core/services/apiTokenService';
 import { formatRelativeTime } from '@nosdesk/core/utils/dateUtils';
 import type { ApiToken, ApiTokenCreated, CreateApiTokenRequest } from '@nosdesk/core/types/apiToken';
+import { useMyWorkspacesStore } from '@/stores/myWorkspaces';
 
 const fluent = useFluent();
+const myWorkspaces = useMyWorkspacesStore();
 const t = (key: string, args?: Record<string, string | number>) => fluent.$t(key, args);
 
 // Token list is cached by Pinia Colada keyed here, so navigating away
@@ -52,6 +54,10 @@ const showRevokeConfirm = ref(false);
 const showTokenCreated = ref(false);
 const tokenToRevoke = ref<ApiToken | null>(null);
 const createdToken = ref<ApiTokenCreated | null>(null);
+
+// A token is bound to the workspace it was minted in and is refused anywhere
+// else, so say which one that is before and after minting.
+const boundWorkspaceName = computed(() => myWorkspaces.activeWorkspace?.name ?? '');
 const copiedToken = ref(false);
 
 // Form state
@@ -537,6 +543,10 @@ const revokeToken = async () => {
           </p>
         </div>
 
+        <p v-if="boundWorkspaceName" class="text-xs text-tertiary">
+          {{ t('admin-api-tokens-workspace-bound', { workspace: boundWorkspaceName }) }}
+        </p>
+
         <!-- Actions -->
         <div class="flex justify-end gap-2 pt-2">
           <button
@@ -586,6 +596,10 @@ const revokeToken = async () => {
 
         <p class="text-xs text-tertiary">
           {{ $t('admin-api-tokens-bearer-hint-prefix') }} <code class="px-1 py-0.5 bg-surface-alt rounded">Authorization: Bearer &lt;token&gt;</code> {{ $t('admin-api-tokens-bearer-hint-suffix') }}
+        </p>
+
+        <p v-if="boundWorkspaceName" class="text-xs text-tertiary">
+          {{ t('admin-api-tokens-workspace-bound', { workspace: boundWorkspaceName }) }}
         </p>
 
         <div class="flex justify-end pt-2">

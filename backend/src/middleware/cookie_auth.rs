@@ -50,6 +50,25 @@ pub enum WorkspaceCarrier<'a> {
         token_workspace: Option<uuid::Uuid>,
         req: &'a actix_web::HttpRequest,
     },
+    /// A personal API token (`nsk_…`). The `api_tokens` row records the
+    /// workspace the token was minted in, and that binding is a **ceiling, not
+    /// a selection**: the request's own origin / selection is resolved exactly
+    /// as [`WorkspaceCarrier::RequestOrigin`] does and must MATCH the binding.
+    /// Membership alone is not enough, so an admin of both A and B cannot point
+    /// A's token at B.
+    ///
+    /// A request that names no workspace resolves to `None`, exactly as
+    /// `RequestOrigin` does, and is left to the caller's [`UnresolvedPolicy`].
+    /// Using the binding as a selection here was tried and reverted: the same
+    /// unresolved case covers a platform admin's cross-workspace call to
+    /// `/api/admin/workspaces/{id}/members` (under `dual_auth_middleware`,
+    /// `startup.rs`), which has no workspace to be a member of. Pinning the
+    /// binding there turns a never-gated request into a gated one and 403s a
+    /// legitimate call.
+    ApiToken {
+        bound_workspace: uuid::Uuid,
+        req: &'a ServiceRequest,
+    },
 }
 
 /// What to do when a carrier resolves to NO workspace. Fail-closed by default: a
@@ -95,7 +114,7 @@ pub fn resolve_pin_and_gate(
         ));
     }
 
-    match resolve_carrier(conn, carrier)? {
+    match resolve_carrier(conn, claims, carrier)? {
         Some(ctx) => {
             // A workspace-scoped request whose subject doesn't parse is
             // malformed; fail closed (auth already validated the token, so this
@@ -120,18 +139,37 @@ pub fn resolve_pin_and_gate(
 /// PROVIDED identifier that is unknown (existence not leaked).
 fn resolve_carrier(
     conn: &mut DbConnection,
+    claims: &Claims,
     carrier: WorkspaceCarrier<'_>,
 ) -> Result<Option<crate::extractors::WorkspaceContext>, Error> {
     match carrier {
-        WorkspaceCarrier::RequestOrigin(req) => {
-            if let Some(ctx) = req
-                .extensions()
-                .get::<crate::extractors::WorkspaceContext>()
-                .cloned()
-            {
-                return Ok(Some(ctx));
+        WorkspaceCarrier::RequestOrigin(req) => origin_context(req, conn),
+        WorkspaceCarrier::ApiToken {
+            bound_workspace,
+            req,
+        } => {
+            match origin_context(req, conn)? {
+                Some(ctx) => {
+                    // A token whose workspace has since been deleted gets the
+                    // same 403 a non-member gets.
+                    let bound = resolve_provided_uuid(conn, bound_workspace)?;
+                    if ctx.workspace_id != bound.workspace_id {
+                        warn!(
+                            user = %claims.sub,
+                            bound_workspace = %bound_workspace,
+                            attempted_workspace = %ctx.workspace_uuid,
+                            "API token presented against a workspace it is not bound to"
+                        );
+                        return Err(actix_web::error::ErrorForbidden(
+                            "This API token is bound to a different workspace",
+                        ));
+                    }
+                    Ok(Some(ctx))
+                }
+                // Nothing named a workspace, so there is nothing to compare the
+                // binding against. Not a selection; see the carrier doc.
+                None => Ok(None),
             }
-            selected_workspace_context(req, conn)
         }
         WorkspaceCarrier::ConnectionToken {
             token_workspace,
@@ -144,6 +182,24 @@ fn resolve_carrier(
                 .cloned()),
         },
     }
+}
+
+/// The REST resolution rule, shared by the `RequestOrigin` and `ApiToken`
+/// carriers so the two cannot drift: the Host-derived context wins, and the
+/// `X-Nosdesk-Workspace` selection header is consulted only when the origin
+/// resolved to nothing.
+fn origin_context(
+    req: &ServiceRequest,
+    conn: &mut DbConnection,
+) -> Result<Option<crate::extractors::WorkspaceContext>, Error> {
+    if let Some(ctx) = req
+        .extensions()
+        .get::<crate::extractors::WorkspaceContext>()
+        .cloned()
+    {
+        return Ok(Some(ctx));
+    }
+    selected_workspace_context(req, conn)
 }
 
 /// Resolve a provided workspace uuid, mapping an unknown uuid to the same 403 a
@@ -187,6 +243,38 @@ pub fn enforce_workspace_membership(
         // Publish the resolved (possibly selection-derived) context so
         // downstream handlers + pins read the selected workspace. Re-inserting a
         // Host-derived context is a harmless no-op.
+        GateOutcome::Scoped(ctx) => {
+            req.extensions_mut().insert(ctx);
+        }
+        GateOutcome::Unscoped => {}
+    }
+    Ok(())
+}
+
+/// The API-token variant of [`enforce_workspace_membership`]: the same resolve,
+/// pin and gate, with the token's own workspace binding as an additional
+/// ceiling on top.
+pub fn enforce_api_token_workspace(
+    req: &ServiceRequest,
+    conn: &mut DbConnection,
+    claims: &Claims,
+    bound_workspace: uuid::Uuid,
+) -> Result<(), Error> {
+    match resolve_pin_and_gate(
+        conn,
+        claims,
+        WorkspaceCarrier::ApiToken {
+            bound_workspace,
+            req,
+        },
+        // AllowRlsBackstop, the same as REST and for the same reason: a request
+        // that names no workspace is an apex or platform route (a platform
+        // admin's cross-workspace call, say), and the binding is a ceiling on
+        // which workspace a token may act in, not a selection of one.
+        UnresolvedPolicy::AllowRlsBackstop,
+    )? {
+        // Publish the resolved context, as the cookie/session gate does, so the
+        // handler's `TenantConn` pins the same workspace.
         GateOutcome::Scoped(ctx) => {
             req.extensions_mut().insert(ctx);
         }
