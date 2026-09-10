@@ -237,6 +237,11 @@ pub enum SendInvitationResult {
 /// sign of a malformed payload.
 const MAX_DASHBOARD_LAYOUT_BYTES: usize = 4 * 1024;
 
+/// Confirmation resends allowed per user per hour. Matches
+/// `password_reset::MAX_RESET_REQUESTS_PER_HOUR`: same shape of action, same
+/// reason to bound it, so no reason for a different number.
+const MAX_VERIFICATION_RESENDS_PER_HOUR: i64 = 3;
+
 /// Validate the shape of a user-supplied `dashboard_layout` JSON blob
 /// before it is persisted. Expected form:
 ///
@@ -2676,9 +2681,15 @@ pub async fn update_user_email(
 
 /// Re-send the confirmation link for an unverified address.
 ///
-/// Rate limiting is the token table's own: `count_recent_tokens` is what stops
-/// this becoming a way to have us mail someone repeatedly, since the address
-/// need not belong to the person asking until it is confirmed.
+/// Throttled per user per hour, the same way password reset and the portal
+/// magic link are. This one needs it more than either: an unconfirmed address
+/// does not belong to the person asking, so an unthrottled resend is a way to
+/// make us repeatedly email a stranger. The `/api` scope limiter bounds
+/// request rate generally, but it is not a per-address cap on outbound mail.
+///
+/// Over the limit returns success. Whether an address is at its resend ceiling
+/// is not something a caller should be able to probe for, and the honest
+/// alternative leaks it.
 pub async fn resend_user_email_verification(
     db_pool: web::Data<crate::db::Pool>,
     req: HttpRequest,
@@ -2721,6 +2732,31 @@ pub async fn resend_user_email_verification(
 
     if email.is_verified {
         return errors::bad_request("That address is already confirmed");
+    }
+
+    // Same window and ceiling as password reset, for the same reason.
+    let since = chrono::Utc::now() - chrono::Duration::hours(1);
+    let recent = match crate::repository::reset_tokens::count_recent_tokens(
+        &mut conn,
+        uuid_parsed,
+        crate::utils::reset_tokens::TokenType::EmailVerification.as_str(),
+        since,
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            error!(error = ?e, "Error counting recent verification tokens");
+            return errors::internal("Failed to send confirmation");
+        }
+    };
+    if recent >= MAX_VERIFICATION_RESENDS_PER_HOUR {
+        warn!(
+            user_uuid = %uuid_parsed,
+            "Rate limit exceeded for email verification resend"
+        );
+        return HttpResponse::Ok().json(json!({
+            "status": "success",
+            "message": "Confirmation email sent"
+        }));
     }
 
     // Every outstanding link for this user is superseded. Without this, an
