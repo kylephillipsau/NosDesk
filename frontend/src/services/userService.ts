@@ -201,8 +201,12 @@ const userService = {
     }
   },
 
-  // Update email (set as primary or verified)
-  async updateUserEmail(uuid: string, emailId: number, updates: { is_primary?: boolean; is_verified?: boolean }): Promise<UserEmail | null> {
+  // Update email (set as primary).
+  //
+  // No `is_verified`: verification is a claim about the address, provable only
+  // by a challenge sent to it, so the server does not read it from the body.
+  // Use `resendEmailVerification` / the emailed link instead.
+  async updateUserEmail(uuid: string, emailId: number, updates: { is_primary?: boolean }): Promise<UserEmail | null> {
     try {
       const response = await apiClient.put(`/users/${uuid}/emails/${emailId}`, updates);
       return response.data.email || null;
@@ -210,6 +214,23 @@ const userService = {
       logger.error('Failed to update user email', { error, uuid, emailId, updates });
       throw error;
     }
+  },
+
+  // Re-send the confirmation link for an unverified address.
+  async resendEmailVerification(uuid: string, emailId: number): Promise<void> {
+    try {
+      await apiClient.post(`/users/${uuid}/emails/${emailId}/resend-verification`);
+    } catch (error) {
+      logger.error('Failed to resend verification email', { error, uuid, emailId });
+      throw error;
+    }
+  },
+
+  // Redeem a confirmation link. Public and unauthenticated: the link is opened
+  // from a mail client, which may not be the browser holding the session.
+  async verifyEmailToken(token: string): Promise<{ email?: string }> {
+    const response = await apiClient.post('/public/verify-email', { token });
+    return response.data ?? {};
   },
 
   // Delete an email address

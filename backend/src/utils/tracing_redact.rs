@@ -96,6 +96,11 @@ const ALLOWED_FIELDS: &[&str] = &[
     // somewhere.
     "bound_workspace",
     "attempted_workspace",
+    // The `user_emails` row an address-confirmation link names. Safe for the
+    // reason the address itself would not be: it is an opaque internal id, so
+    // it correlates a confirmation attempt across log lines without putting
+    // anybody's email address in the log.
+    "email_id",
     // bounded enums + operational dimensions. No free text.
     "aggregate",
     // Which realm a refresh token belongs to: exactly "agent" or "portal".

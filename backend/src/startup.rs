@@ -773,6 +773,9 @@ pub fn configure_app(
                     .app_data(state.public_limiter_data.clone())
                     .wrap(RateLimiter::default())
                     .configure(crate::handlers::guest::config)
+                    // Address confirmation is redeemed from a mail client, so
+                    // it cannot require the session; the token is the proof.
+                    .configure(crate::handlers::email_verification::config)
             )
 
             // Public WebSocket for collaboration (auth handled in WebSocket handler)

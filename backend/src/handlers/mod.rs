@@ -34,6 +34,7 @@ pub mod documentation_collections;
 pub mod email;
 pub mod email_queue;
 pub mod email_suppressions;
+pub mod email_verification;
 pub mod errors;
 pub mod feature_flags;
 pub mod files;
@@ -97,8 +98,8 @@ pub use users::{
     delete_user_auth_identity_by_uuid, delete_user_email, get_paginated_users,
     get_user_auth_identities, get_user_auth_identities_by_uuid, get_user_by_uuid, get_user_emails,
     get_user_security_info, get_user_with_emails, get_users, get_users_batch, purge_user_now,
-    regenerate_avatar_thumbnails, resend_invitation, restore_user, update_user_by_uuid,
-    update_user_email, upload_user_image,
+    regenerate_avatar_thumbnails, resend_invitation, resend_user_email_verification, restore_user,
+    update_user_by_uuid, update_user_email, upload_user_image,
 };
 // Export specific items from tickets to avoid conflicts
 // `config` is intentionally per-module and always referenced via its full path

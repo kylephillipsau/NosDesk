@@ -127,6 +127,24 @@ const setAsPrimary = async (emailId: number, emailAddress: string) => {
 };
 
 // Delete email
+const resending = ref<Set<number>>(new Set());
+const resentFor = ref<Set<number>>(new Set());
+
+// Re-send the confirmation link. Reported per row rather than as a toast that
+// disappears: the user's next step is to go and read their mail, and they may
+// come back to this screen before it arrives.
+const resendVerification = async (emailId: number) => {
+  resending.value = new Set([...resending.value, emailId]);
+  try {
+    await userService.resendEmailVerification(props.userUuid, emailId);
+    resentFor.value = new Set([...resentFor.value, emailId]);
+  } catch (error) {
+    emit('error', extractErrorMessage(error, t('settings-emails-resend-error')));
+  } finally {
+    resending.value = new Set([...resending.value].filter((id) => id !== emailId));
+  }
+};
+
 const pendingDeleteEmail = ref<{ id: number; address: string } | null>(null);
 
 const deleteEmail = (emailId: number, emailAddress: string) => {
@@ -251,6 +269,21 @@ watch(() => props.userUuid, () => {
             :label="email.is_verified ? $t('settings-emails-verified-badge') : $t('settings-emails-unverified-badge')"
             :tone="email.is_verified ? 'positive' : 'caution'"
           />
+
+          <template v-if="canEdit && email.id !== 0 && !email.is_verified">
+            <span v-if="resentFor.has(email.id)" class="text-2xs text-tertiary">
+              {{ $t('settings-emails-resend-sent') }}
+            </span>
+            <Button
+              v-else
+              variant="secondary"
+              size="sm"
+              :disabled="resending.has(email.id)"
+              @click="resendVerification(email.id)"
+            >
+              {{ resending.has(email.id) ? $t('settings-emails-resend-sending') : $t('settings-emails-resend') }}
+            </Button>
+          </template>
 
           <template v-if="canEdit && email.id !== 0 && !email.is_primary">
             <Button variant="secondary" size="sm" @click="setAsPrimary(email.id, email.email)">

@@ -47,6 +47,41 @@ invitation-body-text =
     -- { $app }
 
 # Wachtwoordloze aanmelding bij het klantenportaal (automatische vertaling, in afwachting van revisie).
+route-title-verify-email = E-mail bevestigen
+verify-email-working = Je adres wordt bevestigd…
+verify-email-success-title = Adres bevestigd
+verify-email-success-body = Dit adres is nu bevestigd op je account.
+verify-email-success-body-address = { $address } is nu bevestigd op je account.
+verify-email-failed-title = Kan dit adres niet bevestigen
+verify-email-failed-body = Deze bevestigingslink is ongeldig of verlopen.
+verify-email-failed-hint = Bevestigingslinks verlopen na 24 uur en zijn eenmalig te gebruiken. Je kunt vanuit je profiel een nieuwe sturen.
+verify-email-missing-token = In deze link ontbreekt de bevestigingscode.
+verify-email-continue = Doorgaan
+settings-emails-resend = Bevestiging opnieuw sturen
+settings-emails-resend-sending = Versturen…
+settings-emails-resend-sent = Bevestiging verstuurd
+settings-emails-resend-error = Kan de bevestigingsmail niet versturen.
+
+email-verify-subject = Bevestig je e-mailadres voor { $app }
+email-verify-title = Bevestig je e-mailadres
+email-verify-greeting = Hallo <strong>{ $name }</strong>,
+email-verify-intro = Gebruik de knop hieronder om <strong>{ $address }</strong> te bevestigen zodat het bij je <strong>{ $app }</strong>-account gebruikt kan worden.
+email-verify-cta-label = Dit adres bevestigen
+email-verify-notice-expiry = Deze link verloopt over <strong>24 uur</strong> en kan één keer gebruikt worden
+email-verify-notice-unexpected = Heb je dit adres niet toegevoegd, dan kun je deze e-mail negeren
+email-verify-body-text =
+    Hallo { $name },
+
+    Gebruik deze link om { $address } te bevestigen zodat het bij je account gebruikt kan worden:
+
+    { $link }
+
+    Goed om te weten:
+      - Deze link verloopt over 24 uur en kan één keer gebruikt worden.
+      - Heb je dit adres niet toegevoegd, dan kun je deze e-mail negeren.
+
+    -- { $app }
+
 portal-magic-link-subject = Meld u aan bij { $app }-ondersteuning
 portal-magic-link-title = Meld u aan bij { $app }
 portal-magic-link-greeting = Hallo <strong>{ $name }</strong>,

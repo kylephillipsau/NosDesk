@@ -88,6 +88,41 @@ invitation-body-text =
 # Customer-portal passwordless sign-in email. Same HTML/plaintext
 # split as the invitation: HTML keys carry inline <strong> emphasis,
 # variables are HTML-escaped at the Rust boundary.
+route-title-verify-email = Confirm email
+verify-email-working = Confirming your address…
+verify-email-success-title = Address confirmed
+verify-email-success-body = This address is now confirmed on your account.
+verify-email-success-body-address = { $address } is now confirmed on your account.
+verify-email-failed-title = Couldn't confirm this address
+verify-email-failed-body = This confirmation link is invalid or has expired.
+verify-email-failed-hint = Confirmation links expire after 24 hours and can be used once. You can send a new one from your profile.
+verify-email-missing-token = This link is missing its confirmation code.
+verify-email-continue = Continue
+settings-emails-resend = Resend confirmation
+settings-emails-resend-sending = Sending…
+settings-emails-resend-sent = Confirmation sent
+settings-emails-resend-error = Could not send the confirmation email.
+
+email-verify-subject = Confirm your email address for { $app }
+email-verify-title = Confirm your email address
+email-verify-greeting = Hello <strong>{ $name }</strong>,
+email-verify-intro = Use the button below to confirm <strong>{ $address }</strong> so it can be used with your <strong>{ $app }</strong> account.
+email-verify-cta-label = Confirm this address
+email-verify-notice-expiry = This link expires in <strong>24 hours</strong> and can be used once
+email-verify-notice-unexpected = If you didn't add this address, you can safely ignore this email
+email-verify-body-text =
+    Hello { $name },
+
+    Use this link to confirm { $address } so it can be used with your account:
+
+    { $link }
+
+    A few things to know:
+      - This link expires in 24 hours and can be used once.
+      - If you didn't add this address, you can safely ignore this email.
+
+    -- { $app }
+
 portal-magic-link-subject = Sign in to { $app } support
 portal-magic-link-title = Sign in to { $app }
 portal-magic-link-greeting = Hello <strong>{ $name }</strong>,

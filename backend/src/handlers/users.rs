@@ -98,6 +98,10 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             "/users/{uuid}/emails/{email_id}",
             web::delete().to(crate::handlers::delete_user_email),
         )
+        .route(
+            "/users/{uuid}/emails/{email_id}/resend-verification",
+            web::post().to(crate::handlers::resend_user_email_verification),
+        )
         // User contact profile (standard cols + custom-field values).
         .route(
             "/users/{uuid}/profile-fields",
@@ -2507,6 +2511,7 @@ pub async fn get_user_emails(
 pub async fn add_user_email(
     db_pool: web::Data<crate::db::Pool>,
     req: HttpRequest,
+    ws: WorkspaceContext,
     path: web::Path<String>,
     email_data: web::Json<serde_json::Value>,
 ) -> impl Responder {
@@ -2564,11 +2569,29 @@ pub async fn add_user_email(
     };
 
     match user_emails_repo::add_email(&mut conn, &new_email) {
-        Ok(created_email) => HttpResponse::Created().json(json!({
-            "status": "success",
-            "message": "Email added successfully",
-            "email": created_email
-        })),
+        Ok(created_email) => {
+            // Send the confirmation immediately: an address that arrives
+            // unverified with no way to prove itself is the state this whole
+            // flow exists to end. Best-effort, so a mail failure does not undo
+            // the add; the profile offers a resend.
+            crate::services::email_verification::send_verification(
+                &mut conn,
+                &user,
+                &created_email,
+                ws.workspace_id,
+                crate::utils::client_ip::from_http_request(&req)
+                    .map(|ip| ip.to_string())
+                    .as_deref(),
+                req.headers()
+                    .get(actix_web::http::header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok()),
+            );
+            HttpResponse::Created().json(json!({
+                "status": "success",
+                "message": "Email added successfully",
+                "email": created_email
+            }))
+        }
         Err(e) => {
             error!(error = ?e, "Error adding email");
             errors::internal("Failed to add email")
@@ -2649,6 +2672,86 @@ pub async fn update_user_email(
             errors::internal("Failed to update email")
         }
     }
+}
+
+/// Re-send the confirmation link for an unverified address.
+///
+/// Rate limiting is the token table's own: `count_recent_tokens` is what stops
+/// this becoming a way to have us mail someone repeatedly, since the address
+/// need not belong to the person asking until it is confirmed.
+pub async fn resend_user_email_verification(
+    db_pool: web::Data<crate::db::Pool>,
+    req: HttpRequest,
+    ws: WorkspaceContext,
+    path: web::Path<(String, i32)>,
+) -> impl Responder {
+    let (user_uuid, email_id) = path.into_inner();
+    let mut conn = match helpers::db_conn(&db_pool) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+
+    let claims = match crate::utils::jwt::JwtUtils::extract_claims(&req) {
+        Ok(claims) => claims,
+        Err(_) => return errors::unauthorized("Authentication required"),
+    };
+    if claims.sub != user_uuid && !is_platform_admin(&claims) {
+        return errors::forbidden("Not authorized");
+    }
+
+    let uuid_parsed = match utils::parse_uuid(&user_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => return errors::bad_request("Invalid UUID format"),
+    };
+    let user = match repository::get_user_by_uuid(&uuid_parsed, &mut conn) {
+        Ok(user) => user,
+        Err(_) => return errors::not_found_msg("User not found"),
+    };
+
+    let email = match user_emails_repo::get_user_emails_by_uuid(&mut conn, &uuid_parsed) {
+        Ok(rows) => match rows.into_iter().find(|e| e.id == email_id) {
+            Some(e) => e,
+            None => return errors::not_found_msg("Email not found"),
+        },
+        Err(e) => {
+            error!(error = ?e, "Error loading emails for resend");
+            return errors::internal("Failed to load email");
+        }
+    };
+
+    if email.is_verified {
+        return errors::bad_request("That address is already confirmed");
+    }
+
+    // Every outstanding link for this user is superseded. Without this, an
+    // address removed and re-added, or simply resent a few times, leaves older
+    // tokens live, and each one is a standing claim on whatever row it names.
+    if let Err(e) = crate::repository::reset_tokens::invalidate_tokens_by_type(
+        &mut conn,
+        uuid_parsed,
+        crate::utils::reset_tokens::TokenType::EmailVerification.as_str(),
+    ) {
+        error!(error = ?e, "Error invalidating prior verification tokens");
+        return errors::internal("Failed to send confirmation");
+    }
+
+    crate::services::email_verification::send_verification(
+        &mut conn,
+        &user,
+        &email,
+        ws.workspace_id,
+        crate::utils::client_ip::from_http_request(&req)
+            .map(|ip| ip.to_string())
+            .as_deref(),
+        req.headers()
+            .get(actix_web::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok()),
+    );
+
+    HttpResponse::Ok().json(json!({
+        "status": "success",
+        "message": "Confirmation email sent"
+    }))
 }
 
 /// Delete an email address

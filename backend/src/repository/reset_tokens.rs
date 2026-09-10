@@ -118,10 +118,29 @@ pub fn validate_and_consume_token(
     raw_token: &str,
     expected_token_type: &str,
 ) -> Result<Uuid, String> {
+    validate_and_consume_token_with_metadata(conn, raw_token, expected_token_type)
+        .map(|(user_uuid, _)| user_uuid)
+}
+
+// sync-audit-only: auth flow mirror of mark_token_as_used; covered by security_events
+/// As [`validate_and_consume_token`], also returning the token's `metadata`.
+///
+/// Email confirmation needs it: `reset_tokens` is user-scoped, and a user may
+/// hold several unverified addresses, so which address a token confirms is
+/// recorded in `metadata` rather than being derivable from its subject.
+///
+/// One implementation on purpose. The single-use guarantee is the `is_used =
+/// false` predicate inside this one UPDATE, so a second claim path would be a
+/// second chance to get atomicity wrong.
+pub fn validate_and_consume_token_with_metadata(
+    conn: &mut DbConnection,
+    raw_token: &str,
+    expected_token_type: &str,
+) -> Result<(Uuid, Option<serde_json::Value>), String> {
     let token_hash_value = ResetTokenUtils::hash_token(raw_token);
     let now = Utc::now();
 
-    let user_uuid: Option<Uuid> = diesel::update(
+    let claimed: Option<(Uuid, Option<serde_json::Value>)> = diesel::update(
         reset_tokens::table
             .filter(reset_tokens::token_hash.eq(&token_hash_value))
             .filter(reset_tokens::token_type.eq(expected_token_type))
@@ -132,12 +151,12 @@ pub fn validate_and_consume_token(
         reset_tokens::is_used.eq(true),
         reset_tokens::used_at.eq(Some(now)),
     ))
-    .returning(reset_tokens::user_uuid)
+    .returning((reset_tokens::user_uuid, reset_tokens::metadata))
     .get_result(conn)
     .optional()
     .map_err(|e| format!("Failed to claim token: {e}"))?;
 
-    user_uuid.ok_or_else(|| "Invalid or expired token".to_string())
+    claimed.ok_or_else(|| "Invalid or expired token".to_string())
 }
 
 #[cfg(test)]

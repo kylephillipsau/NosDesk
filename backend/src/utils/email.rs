@@ -1645,6 +1645,92 @@ impl EmailService {
         (subject, html_body, body_text)
     }
 
+    /// Compose the "confirm this address" email for an address added to a
+    /// profile.
+    ///
+    /// Deliberately shaped like [`Self::compose_portal_magic_link`]: the same
+    /// proof (possession of a link sent to the address) with a much smaller
+    /// consequence, since clicking it verifies one address rather than signing
+    /// anyone in. The copy says which address is being confirmed, because a
+    /// user with several addresses cannot otherwise tell which one this is
+    /// about.
+    pub fn compose_email_verification(
+        &self,
+        user_name: &str,
+        address: &str,
+        verification_token: &str,
+        branding: &EmailBranding,
+        locale: &unic_langid::LanguageIdentifier,
+    ) -> (String, String, String) {
+        let verify_link = format!(
+            "{}/verify-email?token={}",
+            branding.base_url, verification_token
+        );
+        let template = EmailTemplate::new(branding);
+        let tr = |key: &str, args: &[(&str, fluent_bundle::FluentValue<'static>)]| {
+            crate::utils::i18n::tr_with(locale, key, args)
+        };
+
+        let name_html = escape_html(user_name);
+        let app_html = escape_html(&branding.app_name);
+        let address_html = escape_html(address);
+
+        let title = tr("email-verify-title", &[("app", app_html.clone().into())]);
+        let greeting = tr(
+            "email-verify-greeting",
+            &[("name", name_html.clone().into())],
+        );
+        let intro = tr(
+            "email-verify-intro",
+            &[
+                ("app", app_html.clone().into()),
+                ("address", address_html.clone().into()),
+            ],
+        );
+        let cta_label = tr("email-verify-cta-label", &[]);
+        let notice_items: Vec<String> = [
+            "email-verify-notice-expiry",
+            "email-verify-notice-unexpected",
+        ]
+        .iter()
+        .map(|key| tr(key, &[]))
+        .collect();
+
+        let html_body = template.render(
+            EmailLayout {
+                headline: &title,
+                body: vec![text(greeting), text(intro)],
+                cta: Some(Cta {
+                    label: cta_label,
+                    url: verify_link.clone(),
+                }),
+                notice: Some(Notice {
+                    kind: NoticeType::Info,
+                    items: notice_items,
+                }),
+                signoff: None,
+                preheader: &title,
+            },
+            locale,
+        );
+
+        let subject = tr(
+            "email-verify-subject",
+            &[("app", branding.app_name.clone().into())],
+        );
+
+        let body_text = tr(
+            "email-verify-body-text",
+            &[
+                ("name", user_name.to_string().into()),
+                ("address", address.to_string().into()),
+                ("link", verify_link.clone().into()),
+            ],
+        );
+
+        (subject, html_body, body_text)
+    }
+
     /// Send a confirmation email for a guest ticket submission. The link
     /// uses the same accept-invitation flow as a normal invitation, but the
     /// copy is tailored to the ticket-submission context — the email is
