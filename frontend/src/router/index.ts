@@ -94,6 +94,17 @@ const router = createRouter({
       }
     },
     {
+      // Opened from a mail client, so it must render without a session.
+      path: '/verify-email',
+      name: 'verify-email',
+      component: () => import('@/views/VerifyEmailView.vue'),
+      meta: {
+        layout: 'blank',
+        requiresAuth: false,
+        titleKey: 'route-title-verify-email'
+      }
+    },
+    {
       path: '/mfa-setup',
       name: 'mfa-setup',
       component: () => import('@/views/MFASetupView.vue'),

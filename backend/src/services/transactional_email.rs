@@ -414,6 +414,68 @@ pub fn enqueue_portal_magic_link(
     outbound_emails::enqueue_idempotent(conn, row)
 }
 
+/// Build the `NewOutboundEmail` row for an address-confirmation send.
+/// See `prepare_password_reset` for the rationale.
+pub fn prepare_email_verification(
+    svc: &EmailService,
+    branding: &EmailBranding,
+    recipient: &str,
+    user_name: &str,
+    verification_token: &str,
+    locale: &unic_langid::LanguageIdentifier,
+) -> NewOutboundEmail {
+    let (subject, body_html, body_text) =
+        svc.compose_email_verification(user_name, recipient, verification_token, branding, locale);
+    let message_id = make_message_id("email-verify", &from_email_domain(svc));
+    let headers_json = serde_json::json!({
+        "Auto-Submitted": "auto-generated",
+    });
+
+    NewOutboundEmail {
+        channel_id: None,
+        ticket_id: None,
+        comment_id: None,
+        recipient: recipient.to_string(),
+        subject,
+        body_text,
+        body_html: Some(body_html),
+        message_id,
+        in_reply_to: None,
+        references_list: vec![],
+        headers_json,
+        correlation_id: None,
+        idempotency_key: Some(format!("email_verification:{}", hash16(verification_token))),
+        sender_identity: outbound_email_sender_identity::WORKSPACE.to_string(),
+        // TRANSACTIONAL, not a notification: this is the address proving
+        // itself, so suppression preferences must not withhold it. A user who
+        // muted notification mail still has to be able to confirm an address.
+        mail_class: outbound_email_mail_class::TRANSACTIONAL.to_string(),
+    }
+}
+
+/// Enqueue an address-confirmation email. The key derives from the token, so
+/// a resend (new token) is a new send; idempotency only catches enqueue
+/// retries inside one request.
+pub fn enqueue_email_verification(
+    conn: &mut DbConnection,
+    svc: &EmailService,
+    branding: &EmailBranding,
+    recipient: &str,
+    user_name: &str,
+    verification_token: &str,
+    locale: &unic_langid::LanguageIdentifier,
+) -> Result<OutboundEmail, DieselError> {
+    let row = prepare_email_verification(
+        svc,
+        branding,
+        recipient,
+        user_name,
+        verification_token,
+        locale,
+    );
+    outbound_emails::enqueue_idempotent(conn, row)
+}
+
 /// Build the signed one-click unsubscribe URL for a notification email, on the
 /// same origin as `cta_url` (the product app that serves the endpoint). `None`
 /// when the recipient uuid or the CTA origin can't be parsed, or `JWT_SECRET`

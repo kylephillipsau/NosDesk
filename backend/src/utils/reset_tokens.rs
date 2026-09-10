@@ -12,6 +12,14 @@ pub enum TokenType {
     /// possession of the emailed link proves the customer owns the address,
     /// which is their whole identity in the portal.
     PortalMagicLink,
+    /// Proves someone controls an address they added to their profile. Same
+    /// reasoning as the portal link, narrower consequence: it verifies one
+    /// `user_emails` row rather than signing anyone in.
+    ///
+    /// The row is named in the token's `metadata`, not derived from the user,
+    /// because `reset_tokens` is user-scoped and a user may have several
+    /// unverified addresses at once.
+    EmailVerification,
 }
 
 impl TokenType {
@@ -20,6 +28,7 @@ impl TokenType {
             TokenType::PasswordReset => "password_reset",
             TokenType::Invitation => "invitation",
             TokenType::PortalMagicLink => "portal_magic_link",
+            TokenType::EmailVerification => "email_verification",
         }
     }
 
@@ -29,6 +38,11 @@ impl TokenType {
             TokenType::PasswordReset => Duration::hours(1), // 1 hour for password resets
             TokenType::Invitation => Duration::days(7),     // 7 days for user invitations
             TokenType::PortalMagicLink => Duration::minutes(20), // short-lived sign-in link
+            // A day: long enough to survive "I'll do it tonight", short enough
+            // that a forwarded mailbox archive is not a standing claim on the
+            // address. Nothing is signed in by it, so the risk of the longer
+            // window is bounded.
+            TokenType::EmailVerification => Duration::hours(24),
         }
     }
 }

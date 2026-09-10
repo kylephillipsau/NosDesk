@@ -10,6 +10,7 @@ pub mod custom_fields;
 pub mod dkim_verification;
 pub mod dns_diagnostics;
 pub mod email_queue;
+pub mod email_verification;
 pub mod imports;
 pub mod inbound_email;
 pub mod ldap;

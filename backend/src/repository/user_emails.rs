@@ -168,6 +168,36 @@ pub fn mark_primary_verified(
 }
 
 // sync-audit-only: user_emails is a contact-detail table with no audit trigger and no sync aggregate; nothing subscribes to email add/update/remove
+/// Mark one address verified, but only if the row still matches the claim the
+/// token was minted against.
+///
+/// Both predicates matter. `user_uuid` stops a token verifying a row on another
+/// account, and `email` stops it verifying a row that has since been pointed at
+/// a different address: the proof was of the address in the token, not of
+/// whatever that row holds when the link is finally clicked.
+///
+/// The address is required rather than optional so there is no call shape in
+/// which the second check is skipped.
+///
+/// Returns the number of rows updated, so 0 means "no longer matches" rather
+/// than an error.
+pub fn mark_verified_if_matches(
+    conn: &mut DbConnection,
+    email_id: i32,
+    user_uuid: Uuid,
+    address: &str,
+) -> Result<usize, diesel::result::Error> {
+    diesel::update(
+        user_emails::table
+            .find(email_id)
+            .filter(user_emails::user_uuid.eq(user_uuid))
+            .filter(user_emails::email.eq(address)),
+    )
+    .set(user_emails::is_verified.eq(true))
+    .execute(conn)
+}
+
+// sync-audit-only: user_emails is a contact-detail table with no audit trigger and no sync aggregate; nothing subscribes to email add/update/remove
 /// Remove one email row by id.
 pub fn delete_email(
     conn: &mut DbConnection,
@@ -253,5 +283,59 @@ mod tests {
              address; if this fails, `is_verified` is back on UserEmailUpdate"
         );
         assert!(updated.is_primary, "the fields it may set still apply");
+    }
+
+    /// The two predicates on the update are the whole guard, so each gets a
+    /// case that fails if it is dropped.
+    #[test]
+    fn verification_applies_only_to_the_row_the_token_named() {
+        let mut conn = setup_test_connection();
+        let owner = TestFixtures::create_user(&mut conn, "owner", "user");
+        let other = TestFixtures::create_user(&mut conn, "other", "user");
+        let email =
+            TestFixtures::create_user_email(&mut conn, owner.uuid, "claimed@example.com", true);
+        diesel::update(user_emails::table.find(email.id))
+            .set(user_emails::is_verified.eq(false))
+            .execute(&mut conn)
+            .expect("start unverified");
+
+        // Right row, right address: verified.
+        assert_eq!(
+            mark_verified_if_matches(&mut conn, email.id, owner.uuid, "claimed@example.com")
+                .expect("update"),
+            1
+        );
+
+        diesel::update(user_emails::table.find(email.id))
+            .set(user_emails::is_verified.eq(false))
+            .execute(&mut conn)
+            .expect("reset");
+
+        // Another account's token must not verify this row.
+        assert_eq!(
+            mark_verified_if_matches(&mut conn, email.id, other.uuid, "claimed@example.com")
+                .expect("update"),
+            0,
+            "a token minted for one account must not verify another account's address"
+        );
+
+        // A token minted against a different address must not verify whatever
+        // the row holds now.
+        assert_eq!(
+            mark_verified_if_matches(&mut conn, email.id, owner.uuid, "stale@example.com")
+                .expect("update"),
+            0,
+            "the proof was of the address in the token, not of the row"
+        );
+
+        let after = get_user_emails_by_uuid(&mut conn, &owner.uuid)
+            .expect("reload")
+            .into_iter()
+            .find(|e| e.id == email.id)
+            .expect("row present");
+        assert!(
+            !after.is_verified,
+            "neither rejected call may have verified the address"
+        );
     }
 }

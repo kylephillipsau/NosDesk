@@ -50,6 +50,41 @@ invitation-body-text =
     -- { $app }
 
 # Connexion sans mot de passe au portail client (traduction automatique, en attente de relecture).
+route-title-verify-email = Confirmer l’e-mail
+verify-email-working = Confirmation de votre adresse…
+verify-email-success-title = Adresse confirmée
+verify-email-success-body = Cette adresse est désormais confirmée sur votre compte.
+verify-email-success-body-address = { $address } est désormais confirmée sur votre compte.
+verify-email-failed-title = Impossible de confirmer cette adresse
+verify-email-failed-body = Ce lien de confirmation est invalide ou a expiré.
+verify-email-failed-hint = Les liens de confirmation expirent après 24 heures et ne servent qu’une fois. Vous pouvez en envoyer un nouveau depuis votre profil.
+verify-email-missing-token = Ce lien ne contient pas de code de confirmation.
+verify-email-continue = Continuer
+settings-emails-resend = Renvoyer la confirmation
+settings-emails-resend-sending = Envoi…
+settings-emails-resend-sent = Confirmation envoyée
+settings-emails-resend-error = Impossible d’envoyer l’e-mail de confirmation.
+
+email-verify-subject = Confirmez votre adresse e-mail pour { $app }
+email-verify-title = Confirmez votre adresse e-mail
+email-verify-greeting = Bonjour <strong>{ $name }</strong>,
+email-verify-intro = Utilisez le bouton ci-dessous pour confirmer <strong>{ $address }</strong> afin de l'utiliser avec votre compte <strong>{ $app }</strong>.
+email-verify-cta-label = Confirmer cette adresse
+email-verify-notice-expiry = Ce lien expire dans <strong>24 heures</strong> et ne peut être utilisé qu'une fois
+email-verify-notice-unexpected = Si vous n'avez pas ajouté cette adresse, vous pouvez ignorer cet e-mail
+email-verify-body-text =
+    Bonjour { $name },
+
+    Utilisez ce lien pour confirmer { $address } afin de l'utiliser avec votre compte :
+
+    { $link }
+
+    À savoir :
+      - Ce lien expire dans 24 heures et ne peut être utilisé qu'une fois.
+      - Si vous n'avez pas ajouté cette adresse, vous pouvez ignorer cet e-mail.
+
+    -- { $app }
+
 portal-magic-link-subject = Connectez-vous à l'assistance { $app }
 portal-magic-link-title = Connectez-vous à { $app }
 portal-magic-link-greeting = Bonjour <strong>{ $name }</strong>,
