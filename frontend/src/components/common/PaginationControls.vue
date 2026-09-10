@@ -118,7 +118,7 @@ const hasMultiplePages = computed(() => !props.isInfiniteMode && props.totalPage
       <!-- Left: Position info -->
       <div class="flex items-center gap-1 text-xs text-secondary">
         <template v-if="isInfiniteMode">
-          <span>{{ totalItems }} items</span>
+          <span>{{ t('pagination-controls-items', { count: totalItems }) }}</span>
         </template>
         <template v-else>
           <span>{{ t('pagination-controls-page') }}</span>
@@ -185,18 +185,21 @@ const hasMultiplePages = computed(() => !props.isInfiniteMode && props.totalPage
           size="xs"
           @update:model-value="handlePageSizeChange"
         />
-        <span>per page</span>
+        <span>{{ t('pagination-controls-per-page') }}</span>
       </div>
 
-      <!-- Center: Pagination controls -->
+      <!-- Center: navigation only.
+           The three slots each mean one thing: page size on the left,
+           navigation in the middle, position on the right. The item count
+           used to live here, which put it dead centre while the right slot
+           collapsed to an empty div, because its only child is gated on
+           `!isInfiniteMode`. Since infinite mode is the DEFAULT (pageSize
+           starts at 0), that lopsided bar was what every list view showed
+           out of the box. The count is position, not navigation, so it now
+           sits on the right beside where "Page x of y" goes. -->
       <div class="flex-1 flex items-center justify-center min-w-0">
-        <!-- Infinite scroll mode: Just show total -->
-        <template v-if="isInfiniteMode">
-          <span class="text-sm text-secondary">{{ totalItems }} items</span>
-        </template>
-
         <!-- Pagination mode: Page numbers -->
-        <template v-else-if="hasMultiplePages">
+        <template v-if="hasMultiplePages && !isInfiniteMode">
           <div class="flex items-center gap-2">
             <button
               @click="changePage(currentPage - 1)"
@@ -250,7 +253,13 @@ const hasMultiplePages = computed(() => !props.isInfiniteMode && props.totalPage
            for the `go-to-item` it emitted, and its label was
            hard-coded English. -->
       <div class="flex items-center gap-2 flex-shrink-0">
-        <template v-if="!isInfiniteMode">
+        <!-- Infinite mode has no page to report, so the total takes the
+             position slot: same place, same kind of information. -->
+        <template v-if="isInfiniteMode">
+          <span class="text-sm text-secondary">{{ t('pagination-controls-items', { count: totalItems }) }}</span>
+        </template>
+
+        <template v-else>
           <!-- Page info with direct input -->
           <div class="flex items-center gap-1.5 text-sm text-secondary">
             <span>{{ t('pagination-controls-page') }}</span>
@@ -265,7 +274,7 @@ const hasMultiplePages = computed(() => !props.isInfiniteMode && props.totalPage
               class="w-10 px-1.5 py-0.5 text-sm bg-surface-alt border border-default text-primary rounded focus:ring-accent focus:border-accent [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none font-mono text-center"
               ref="pageInput"
             />
-            <span>of {{ totalPages }}</span>
+            <span>{{ t('pagination-controls-of-total', { total: totalPages }) }}</span>
           </div>
         </template>
       </div>
