@@ -1826,8 +1826,7 @@ diesel::table! {
         email_type -> Varchar,
         is_primary -> Bool,
         is_verified -> Bool,
-        #[max_length = 50]
-        source -> Nullable<Varchar>,
+        source -> Nullable<Text>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         created_by -> Nullable<Uuid>,

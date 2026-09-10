@@ -2619,10 +2619,22 @@ pub async fn update_user_email(
         let _ = user_emails_repo::clear_primary(&mut conn, &user.uuid);
     }
 
-    // Update the email
+    // `is_verified` is deliberately NOT read from the body. This endpoint is
+    // authorised by "you are this user", so accepting it let anyone mark their
+    // own address verified, which is the whole of what verification asserts.
+    //
+    // The flag is not cosmetic: `user_helpers::find_verified_user_by_email` is
+    // the inbound-mail impersonation guard and trusts it, so a self-verified
+    // address makes the channel pipeline attribute mail from that address to
+    // the account that claimed it.
+    //
+    // Ownership is proved by a challenge to the address, never asserted by its
+    // claimant. The two writers that remain both rest on such a proof: account
+    // creation, from the identity provider's own `email_verified` claim, and
+    // `user_emails::mark_primary_verified` on invitation accept, where
+    // receiving the invite is the proof.
     let email_update = crate::models::UserEmailUpdate {
         is_primary: update_data.get("is_primary").and_then(|p| p.as_bool()),
-        is_verified: update_data.get("is_verified").and_then(|v| v.as_bool()),
         updated_at: Some(chrono::Utc::now().naive_utc()),
     };
 

@@ -12,7 +12,40 @@ import StatusPill from '@/components/common/StatusPill.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 
 const fluent = useFluent();
+
 const t = (key: string, args?: Record<string, string | number>) => fluent.$t(key, args);
+
+/// A human label for `user_emails.source`.
+///
+/// The column stores an identity key, not display copy: for OIDC it is the
+/// literal issuer (the `iss` half of the `(iss, sub)` seat lookup), otherwise
+/// a provider slug. Rendering it raw put `https://api.nosdesk.dev` in front of
+/// users, and `text-transform: capitalize` turned that into
+/// `Https://Api.nosdesk.dev`, which is how the wrongness got noticed.
+///
+/// An unrecognised issuer falls back to its host, which is the part of a URL
+/// that means something to an admin running more than one provider.
+function sourceLabel(source: string | null | undefined): string {
+  if (!source) return '';
+  switch (source) {
+    case 'manual':
+      return t('settings-emails-source-manual');
+    case 'microsoft':
+      return t('settings-emails-source-microsoft');
+    case 'ldap':
+      return t('settings-emails-source-ldap');
+    case 'control-plane':
+      return t('settings-emails-source-sso');
+    default:
+      break;
+  }
+  try {
+    return new URL(source).host;
+  } catch {
+    return source;
+  }
+}
+
 
 // Props
 const props = withDefaults(defineProps<{
@@ -208,7 +241,7 @@ watch(() => props.userUuid, () => {
           </div>
           <div class="mt-0.5 text-2xs text-tertiary truncate">
             <span class="capitalize">{{ email.email_type || $t('settings-emails-type-personal') }}</span>
-            <template v-if="email.source"> &middot; <span class="capitalize">{{ email.source }}</span></template>
+            <template v-if="sourceLabel(email.source)"> &middot; <span>{{ sourceLabel(email.source) }}</span></template>
           </div>
         </div>
 

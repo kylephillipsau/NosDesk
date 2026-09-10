@@ -1,0 +1,15 @@
+-- `user_emails.source` records where an address came from. For OIDC that is
+-- the issuer itself (`oauth_provisioning.rs` passes `Some(iss)`), because the
+-- issuer is half the `(iss, sub)` key a seat resolves on.
+--
+-- The column was varchar(50), and real issuers do not fit. Microsoft Entra's
+-- is `https://login.microsoftonline.com/<tenant-guid>/v2.0`, 75 characters.
+-- Postgres rejects an over-length varchar rather than truncating it, so the
+-- insert fails, the surrounding `create_user` fails, and a first-time OIDC
+-- signup against Entra never completes. It has gone unnoticed because the
+-- hosted platform issuer is short and Microsoft logins arrive through the
+-- `microsoft` provider path, which writes the literal string instead.
+--
+-- TEXT rather than a bigger varchar: there is no length this column wants to
+-- enforce, and picking another number just moves the cliff.
+ALTER TABLE user_emails ALTER COLUMN source TYPE TEXT;

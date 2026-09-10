@@ -870,9 +870,11 @@ pub async fn set_member_role(
 
 #[derive(Debug, Deserialize)]
 pub struct CustomDomainRequest {
-    /// New custom-domain hostname, or `null` to clear. The control
-    /// plane has already verified DNS + Fly Certs by the time it
-    /// calls this; we only do structural validation here.
+    /// New custom-domain hostname, or `null` to clear. By the time the
+    /// control plane calls this it has established both halves: the tenant
+    /// proved control of the name with a DNS TXT challenge, and Fly is
+    /// serving a certificate for it. Structural validation is all that is
+    /// left to do here.
     pub hostname: Option<String>,
 }
 

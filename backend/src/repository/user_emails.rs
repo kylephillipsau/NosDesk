@@ -215,4 +215,43 @@ mod tests {
         let found = find_user_by_any_email(&mut conn, "test@example.com").unwrap();
         assert_eq!(found.uuid, user.uuid);
     }
+
+    /// The update changeset must have no way to express "verified".
+    ///
+    /// `PUT /users/{uuid}/emails/{email_id}` is authorised by "you are this
+    /// user", and it used to read `is_verified` from the request body, so any
+    /// user could assert their own address verified. That flag is the inbound
+    /// mail impersonation guard (`user_helpers::find_verified_user_by_email`),
+    /// so asserting it made the channel pipeline attribute mail from the
+    /// address to whoever claimed it.
+    ///
+    /// Verification is only ever written where something proves ownership:
+    /// account creation from the provider's `email_verified` claim, and
+    /// [`mark_primary_verified`] on invitation accept. Neither is a request
+    /// body.
+    #[test]
+    fn an_update_cannot_assert_verification() {
+        let mut conn = setup_test_connection();
+        let user = TestFixtures::create_user(&mut conn, "selfverify", "user");
+        let email =
+            TestFixtures::create_user_email(&mut conn, user.uuid, "claimed@example.com", true);
+        diesel::update(user_emails::table.find(email.id))
+            .set(user_emails::is_verified.eq(false))
+            .execute(&mut conn)
+            .expect("start unverified");
+
+        // Everything the handler is able to build from a request body.
+        let changes = UserEmailUpdate {
+            is_primary: Some(true),
+            updated_at: Some(chrono::Utc::now().naive_utc()),
+        };
+        let updated = update_email(&mut conn, email.id, &changes).expect("update");
+
+        assert!(
+            !updated.is_verified,
+            "an update built from a request body must not be able to verify an \
+             address; if this fails, `is_verified` is back on UserEmailUpdate"
+        );
+        assert!(updated.is_primary, "the fields it may set still apply");
+    }
 }
