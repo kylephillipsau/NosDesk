@@ -124,10 +124,19 @@ pub fn try_bearer_auth(
             warn!("Failed to update token last_used_at: {}", e);
         }
 
-        Ok::<_, diesel::result::Error>((api_token, user, email))
+        // The workspace the token was minted in. Resolved here, inside the
+        // bypass, because the request has no pin yet; it becomes the ceiling
+        // the membership gate enforces. Archive state is deliberately ignored
+        // (see `uuid_for_id`): an archived binding is still the token's
+        // binding, and refusing it is the gate's job, not this lookup's.
+        let workspace_uuid =
+            crate::repository::workspaces::uuid_for_id(conn, api_token.workspace_id)?
+                .ok_or(diesel::result::Error::NotFound)?;
+
+        Ok::<_, diesel::result::Error>((api_token, user, email, workspace_uuid))
     });
 
-    let (api_token, user, email) = match lookup_result {
+    let (api_token, user, email, bound_workspace) = match lookup_result {
         Ok(triple) => triple,
         Err(diesel::result::Error::NotFound) => {
             warn!(path = %req.path(), "API token not found or expired");
@@ -179,7 +188,9 @@ pub fn try_bearer_auth(
         platform_role: user.platform_role.clone(),
         scope,
         sid: None,
-        workspace_uuid: None,
+        // The token's binding, carried on the claims so every surface that
+        // already checks `workspace_uuid` (the collab doc gate) applies it too.
+        workspace_uuid: Some(bound_workspace),
         exp: (now + chrono::Duration::hours(24)).timestamp() as usize,
         iat: now.timestamp() as usize,
     };
@@ -232,10 +243,15 @@ pub(crate) async fn authenticate<B: MessageBody>(
                 let mut conn = pool.get().map_err(|_| {
                     actix_web::error::ErrorInternalServerError("Database connection failed")
                 })?;
-                // Membership 403 gate: a token issued in workspace A can't be
-                // used against workspace B.
-                crate::middleware::cookie_auth::enforce_workspace_membership(
-                    &req, &mut conn, &claims,
+                // Membership gate plus the token's own workspace binding, so a
+                // token minted in workspace A is refused against workspace B
+                // even when its owner is a member of both. `try_bearer_auth`
+                // always sets the binding.
+                let bound = claims.workspace_uuid.ok_or_else(|| {
+                    actix_web::error::ErrorInternalServerError("API token has no workspace binding")
+                })?;
+                crate::middleware::cookie_auth::enforce_api_token_workspace(
+                    &req, &mut conn, &claims, bound,
                 )?;
                 drop(conn);
                 return finalize(req, next, claims).await;

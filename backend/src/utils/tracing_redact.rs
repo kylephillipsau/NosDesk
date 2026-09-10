@@ -89,6 +89,13 @@ const ALLOWED_FIELDS: &[&str] = &[
     "user_uuid",
     "webhook_id",
     "workspace_id",
+    // The workspace an API token is bound to, and the one a request tried to
+    // reach with it. Both are workspace uuids, logged together when the two
+    // disagree so the refusal can be told apart from an ordinary non-member
+    // 403. Without them the line says only that some token was refused
+    // somewhere.
+    "bound_workspace",
+    "attempted_workspace",
     // bounded enums + operational dimensions. No free text.
     "aggregate",
     // Which realm a refresh token belongs to: exactly "agent" or "portal".
